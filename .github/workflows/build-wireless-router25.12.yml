@@ -526,12 +526,102 @@ permissions:
   contents: write
 
 jobs:
+  build_proxy_packages:
+    name: Build daed and Nikki from official source
+    if: ${{ github.event.inputs.profile == 'glinet_gl-mt3600be' }}
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout official Nikki source
+        uses: actions/checkout@v6
+        with:
+          repository: nikkinikki-org/OpenWrt-nikki
+          ref: bc29251f584d02fa7e346e62ced9040319604eec
+          fetch-depth: 1
+
+      - name: Checkout official ImmortalWrt packages source
+        uses: actions/checkout@v6
+        with:
+          repository: immortalwrt/packages
+          ref: 8a7c3b22bdd8c3cf347157220e2b97c29db89b57
+          path: immortalwrt-packages
+          fetch-depth: 1
+
+      - name: Checkout official ImmortalWrt LuCI source
+        uses: actions/checkout@v6
+        with:
+          repository: immortalwrt/luci
+          ref: cb5d4346bed1d12bf64087e672456360f1600db9
+          path: immortalwrt-luci
+          fetch-depth: 1
+
+      - name: Build proxy packages with the ImmortalWrt 25.12.1 SDK
+        uses: openwrt/gh-action-sdk@f5813d30eeef3534b58ac7e79c5d8842b6035434
+        env:
+          ARCH: aarch64_cortex-a53-openwrt-25.12.1@sha256:441f8093008b41301881af4a3ba52e470c3ae579d423445274cf7051048a8eb6
+          CONTAINER: immortalwrt/sdk
+          PACKAGES: nikki luci-app-nikki daed luci-app-daed
+          INDEX: 1
+          NO_REFRESH_CHECK: true
+
+      - name: Verify official package build outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p official-proxy-packages
+
+          for pattern in \
+            'nikki-[0-9]*.apk' \
+            'luci-app-nikki-*.apk' \
+            'luci-i18n-nikki-zh-cn-*.apk' \
+            'daed-[0-9]*.apk' \
+            'daed-geoip-*.apk' \
+            'daed-geosite-*.apk' \
+            'luci-app-daed-*.apk' \
+            'luci-i18n-daed-zh-cn-*.apk'; do
+            mapfile -t matches < <(find bin/packages -type f -name "$pattern" -print)
+            if [[ "${#matches[@]}" -ne 1 ]]; then
+              echo "Expected exactly one package matching $pattern, found ${#matches[@]}"
+              exit 1
+            fi
+            cp "${matches[0]}" official-proxy-packages/
+          done
+
+          mapfile -t built_apks < <(find official-proxy-packages -maxdepth 1 -type f -name '*.apk' -print)
+          if [[ "${#built_apks[@]}" -ne 8 ]]; then
+            echo "Expected exactly eight daed and Nikki APKs, found ${#built_apks[@]}"
+            exit 1
+          fi
+
+          cd official-proxy-packages
+          sha256sum ./*.apk | sort -k2 > SHA256SUMS
+          sha256sum --check SHA256SUMS
+
+      - name: Upload verified official packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: official-proxy-packages-aarch64-cortex-a53-openwrt-25.12
+          path: official-proxy-packages/
+          if-no-files-found: error
+          retention-days: 1
+
   build:
+    needs: build_proxy_packages
+    if: ${{ always() && (needs.build_proxy_packages.result == 'success' || needs.build_proxy_packages.result == 'skipped') }}
     runs-on: ubuntu-22.04
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
+
+      - name: Download verified official packages
+        if: ${{ github.event.inputs.profile == 'glinet_gl-mt3600be' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: official-proxy-packages-aarch64-cortex-a53-openwrt-25.12
+          path: official-proxy-packages
 
       - name: Set executable permissions
         run: |
@@ -645,6 +735,7 @@ jobs:
               -v "${{ github.workspace }}/glinet:/home/build/immortalwrt/files/etc/uci-defaults" \
               -v "${{ github.workspace }}/custom:/home/build/immortalwrt/files/etc/config" \
               -v "${{ github.workspace }}/shell:/home/build/immortalwrt/shell" \
+              -v "${{ github.workspace }}/official-proxy-packages:/home/build/immortalwrt/official-proxy-packages:ro" \
               -v "${{ github.workspace }}/mediatek-filogic/build25.sh:/home/build/immortalwrt/build.sh" \
               -e PROFILE=$profile \
               -e INCLUDE_DOCKER=$include_docker \

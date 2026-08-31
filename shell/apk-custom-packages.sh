@@ -26,15 +26,20 @@
 #CUSTOM_PACKAGES="$CUSTOM_PACKAGES clashoo luci-app-clashoo luci-i18n-clashoo-zh-cn"
 # 新增 Lucky大吉 by gdy666 & sirpdboy 
 #CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-app-lucky lucky luci-i18n-lucky-zh-cn"
-# daed 升级到1.28.0
-CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-i18n-daed-zh-cn"
+# 以下官方源码包仅用于 MT3600BE 的 25.12.1/A53 SDK 构建
+if [ "${PROFILE:-}" = "glinet_gl-mt3600be" ]; then
+  # daed、LuCI 和 geodata 由工作流使用 ImmortalWrt 官方源码编译
+  CUSTOM_PACKAGES="$CUSTOM_PACKAGES daed daed-geoip daed-geosite luci-app-daed luci-i18n-daed-zh-cn"
+fi
 # 任务设置 by sirpdboy
 #CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-app-taskplan luci-i18n-taskplan-zh-cn"
 # MosDNS
 #CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-app-mosdns luci-i18n-mosdns-zh-cn"
 
-# 仓库内代理相关apk
-CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-i18n-nikki-zh-cn"
+# Nikki 由工作流使用官方源码和 ImmortalWrt 25.12.1 SDK 编译
+if [ "${PROFILE:-}" = "glinet_gl-mt3600be" ]; then
+  CUSTOM_PACKAGES="$CUSTOM_PACKAGES nikki luci-app-nikki luci-i18n-nikki-zh-cn"
+fi
 #luci-app-openvpn-server 配置文件存在bug 因此请勿集成 避免报错 但你可以集成luci-i18n-openvpn-zh-cn
 #CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-i18n-openvpn-zh-cn"
 #CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-i18n-dae-zh-cn"

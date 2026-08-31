@@ -1,22 +1,49 @@
 #!/bin/bash
+set -euo pipefail
+
+CUSTOM_PACKAGES="${CUSTOM_PACKAGES:-}"
 source shell/apk-custom-packages.sh
-#echo "✅ 你选择了第三方软件包：$CUSTOM_PACKAGES"
-if [ -z "$CUSTOM_PACKAGES" ]; then
-  echo "⚪️ 未选择 任何第三方软件包"
-else
-  # ============= 同步第三方插件库==============
-  # 同步第三方软件仓库run/apk
-  echo "🔄 正在同步第三方软件仓库 Cloning apk file repo..."
-  git clone --depth=1 https://github.com/wukongdaily/apk.git /tmp/store-apk-repo
 
-  # 拷贝 run/arm64 下所有 run 文件和apk文件 到 extra-packages 目录
-  mkdir -p /home/build/immortalwrt/extra-packages
-  cp -r /tmp/store-apk-repo/run/arm64-a53/* /home/build/immortalwrt/extra-packages/
+# daed and Nikki are built from pinned official sources in the workflow with
+# the matching ImmortalWrt 25.12.1 SDK. Only the expected APKs are accepted.
+if [[ " $CUSTOM_PACKAGES " == *" luci-i18n-daed-zh-cn "* ]] ||
+   [[ " $CUSTOM_PACKAGES " == *" luci-i18n-nikki-zh-cn "* ]]; then
+  OFFICIAL_PACKAGES_DIR="/home/build/immortalwrt/official-proxy-packages"
+  if [[ ! -f "$OFFICIAL_PACKAGES_DIR/SHA256SUMS" ]]; then
+    echo "Official proxy package checksums are missing"
+    exit 1
+  fi
 
-  echo "✅ Run files copied to extra-packages:"
-  # 解压并拷贝apk到packages目录
-  sh shell/apk-prepare-packages.sh
-  ls -lah /home/build/immortalwrt/packages/
+  (
+    cd "$OFFICIAL_PACKAGES_DIR"
+    sha256sum --check SHA256SUMS
+  )
+
+  mapfile -t proxy_apks < <(find "$OFFICIAL_PACKAGES_DIR" -maxdepth 1 -type f -name '*.apk' -print)
+  if [[ "${#proxy_apks[@]}" -ne 8 ]]; then
+    echo "Expected exactly eight verified daed and Nikki APKs, found ${#proxy_apks[@]}"
+    exit 1
+  fi
+
+  for pattern in \
+    'nikki-[0-9]*.apk' \
+    'luci-app-nikki-*.apk' \
+    'luci-i18n-nikki-zh-cn-*.apk' \
+    'daed-[0-9]*.apk' \
+    'daed-geoip-*.apk' \
+    'daed-geosite-*.apk' \
+    'luci-app-daed-*.apk' \
+    'luci-i18n-daed-zh-cn-*.apk'; do
+    mapfile -t matches < <(find "$OFFICIAL_PACKAGES_DIR" -maxdepth 1 -type f -name "$pattern" -print)
+    if [[ "${#matches[@]}" -ne 1 ]]; then
+      echo "Expected exactly one package matching $pattern, found ${#matches[@]}"
+      exit 1
+    fi
+  done
+
+  mkdir -p /home/build/immortalwrt/packages
+  cp "${proxy_apks[@]}" /home/build/immortalwrt/packages/
+  echo "Official daed and Nikki packages verified and staged"
 fi
 
 
@@ -53,6 +80,8 @@ PACKAGES="$PACKAGES luci-i18n-diskman-zh-cn"
 PACKAGES="$PACKAGES luci-i18n-package-manager-zh-cn"
 PACKAGES="$PACKAGES luci-i18n-ttyd-zh-cn"
 PACKAGES="$PACKAGES openssh-sftp-server"
+# USB RNDIS tethering；自动带入 kmod-usb-net 和 kmod-usb-net-cdc-ether
+PACKAGES="$PACKAGES kmod-usb-net-rndis"
 # 文件管理器
 PACKAGES="$PACKAGES luci-i18n-filemanager-zh-cn"
 
