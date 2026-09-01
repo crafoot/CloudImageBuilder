@@ -4,24 +4,24 @@ set -euo pipefail
 CUSTOM_PACKAGES="${CUSTOM_PACKAGES:-}"
 source shell/apk-custom-packages.sh
 
-# daed and Nikki are built from pinned official sources in the workflow with
-# the matching ImmortalWrt 25.12.1 SDK. Only the expected APKs are accepted.
-if [[ " $CUSTOM_PACKAGES " == *" luci-i18n-daed-zh-cn "* ]] ||
+# dae/daed and Nikki are built from pinned sources in the workflow with the
+# matching ImmortalWrt 25.12.1 SDK. Only the expected APKs are accepted.
+if [[ " $CUSTOM_PACKAGES " == *" luci-app-daede "* ]] ||
    [[ " $CUSTOM_PACKAGES " == *" luci-i18n-nikki-zh-cn "* ]]; then
-  OFFICIAL_PACKAGES_DIR="/home/build/immortalwrt/official-proxy-packages"
-  if [[ ! -f "$OFFICIAL_PACKAGES_DIR/SHA256SUMS" ]]; then
-    echo "Official proxy package checksums are missing"
+  PINNED_PACKAGES_DIR="/home/build/immortalwrt/pinned-proxy-packages"
+  if [[ ! -f "$PINNED_PACKAGES_DIR/SHA256SUMS" ]]; then
+    echo "Pinned proxy package checksums are missing"
     exit 1
   fi
 
   (
-    cd "$OFFICIAL_PACKAGES_DIR"
+    cd "$PINNED_PACKAGES_DIR"
     sha256sum --check SHA256SUMS
   )
 
-  mapfile -t proxy_apks < <(find "$OFFICIAL_PACKAGES_DIR" -maxdepth 1 -type f -name '*.apk' -print)
-  if [[ "${#proxy_apks[@]}" -ne 9 ]]; then
-    echo "Expected exactly nine verified daed, Nikki, and mihomo APKs, found ${#proxy_apks[@]}"
+  mapfile -t proxy_apks < <(find "$PINNED_PACKAGES_DIR" -maxdepth 1 -type f -name '*.apk' -print)
+  if [[ "${#proxy_apks[@]}" -ne 7 ]]; then
+    echo "Expected exactly seven verified dae, daed, Nikki, and mihomo APKs, found ${#proxy_apks[@]}"
     exit 1
   fi
 
@@ -30,12 +30,10 @@ if [[ " $CUSTOM_PACKAGES " == *" luci-i18n-daed-zh-cn "* ]] ||
     'mihomo-meta-[0-9]*.apk' \
     'luci-app-nikki-*.apk' \
     'luci-i18n-nikki-zh-cn-*.apk' \
+    'dae-[0-9]*.apk' \
     'daed-[0-9]*.apk' \
-    'daed-geoip-*.apk' \
-    'daed-geosite-*.apk' \
-    'luci-app-daed-*.apk' \
-    'luci-i18n-daed-zh-cn-*.apk'; do
-    mapfile -t matches < <(find "$OFFICIAL_PACKAGES_DIR" -maxdepth 1 -type f -name "$pattern" -print)
+    'luci-app-daede-*.apk'; do
+    mapfile -t matches < <(find "$PINNED_PACKAGES_DIR" -maxdepth 1 -type f -name "$pattern" -print)
     if [[ "${#matches[@]}" -ne 1 ]]; then
       echo "Expected exactly one package matching $pattern, found ${#matches[@]}"
       exit 1
@@ -44,7 +42,7 @@ if [[ " $CUSTOM_PACKAGES " == *" luci-i18n-daed-zh-cn "* ]] ||
 
   mkdir -p /home/build/immortalwrt/packages
   cp "${proxy_apks[@]}" /home/build/immortalwrt/packages/
-  echo "Official daed and Nikki packages verified and staged"
+  echo "Pinned dae, daed, and Nikki packages verified and staged"
 fi
 
 # iStore is not in the ImmortalWrt ImageBuilder repository. When explicitly

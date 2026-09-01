@@ -527,7 +527,7 @@ permissions:
 
 jobs:
   build_proxy_packages:
-    name: Build daed and Nikki from official source
+    name: Build daede and Nikki from pinned sources
     if: ${{ github.event.inputs.profile == 'glinet_gl-mt3600be' }}
     runs-on: ubuntu-22.04
     permissions:
@@ -541,20 +541,12 @@ jobs:
           ref: 3799926b147d7065ac98508f16951f8714e53659
           fetch-depth: 1
 
-      - name: Checkout official ImmortalWrt packages source
+      - name: Checkout pinned openwrt-daede source
         uses: actions/checkout@v6
         with:
-          repository: immortalwrt/packages
-          ref: 8a7c3b22bdd8c3cf347157220e2b97c29db89b57
-          path: immortalwrt-packages
-          fetch-depth: 1
-
-      - name: Checkout official ImmortalWrt LuCI source
-        uses: actions/checkout@v6
-        with:
-          repository: immortalwrt/luci
-          ref: cb5d4346bed1d12bf64087e672456360f1600db9
-          path: immortalwrt-luci
+          repository: kenzok8/openwrt-daede
+          ref: a6c3ced3c7e095630368de96fbf9f2ba03760672
+          path: openwrt-daede
           fetch-depth: 1
 
       - name: Build proxy packages with the ImmortalWrt 25.12.1 SDK
@@ -562,7 +554,7 @@ jobs:
         env:
           ARCH: aarch64_cortex-a53-openwrt-25.12.1@sha256:441f8093008b41301881af4a3ba52e470c3ae579d423445274cf7051048a8eb6
           CONTAINER: immortalwrt/sdk
-          PACKAGES: nikki luci-app-nikki mihomo-meta daed luci-app-daed
+          PACKAGES: nikki luci-app-nikki mihomo-meta dae daed luci-app-daede
           INDEX: 1
           NO_REFRESH_CHECK: true
 
@@ -570,41 +562,39 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p official-proxy-packages
+          mkdir -p pinned-proxy-packages
 
           for pattern in \
             'nikki-[0-9]*.apk' \
             'mihomo-meta-[0-9]*.apk' \
             'luci-app-nikki-*.apk' \
             'luci-i18n-nikki-zh-cn-*.apk' \
+            'dae-[0-9]*.apk' \
             'daed-[0-9]*.apk' \
-            'daed-geoip-*.apk' \
-            'daed-geosite-*.apk' \
-            'luci-app-daed-*.apk' \
-            'luci-i18n-daed-zh-cn-*.apk'; do
+            'luci-app-daede-*.apk'; do
             mapfile -t matches < <(find bin/packages -type f -name "$pattern" -print)
             if [[ "${#matches[@]}" -ne 1 ]]; then
               echo "Expected exactly one package matching $pattern, found ${#matches[@]}"
               exit 1
             fi
-            cp "${matches[0]}" official-proxy-packages/
+            cp "${matches[0]}" pinned-proxy-packages/
           done
 
-          mapfile -t built_apks < <(find official-proxy-packages -maxdepth 1 -type f -name '*.apk' -print)
-          if [[ "${#built_apks[@]}" -ne 9 ]]; then
-            echo "Expected exactly nine daed, Nikki, and mihomo APKs, found ${#built_apks[@]}"
+          mapfile -t built_apks < <(find pinned-proxy-packages -maxdepth 1 -type f -name '*.apk' -print)
+          if [[ "${#built_apks[@]}" -ne 7 ]]; then
+            echo "Expected exactly seven dae, daed, Nikki, and mihomo APKs, found ${#built_apks[@]}"
             exit 1
           fi
 
-          cd official-proxy-packages
+          cd pinned-proxy-packages
           sha256sum ./*.apk | sort -k2 > SHA256SUMS
           sha256sum --check SHA256SUMS
 
-      - name: Upload verified official packages
+      - name: Upload verified pinned packages
         uses: actions/upload-artifact@v4
         with:
-          name: official-proxy-packages-aarch64-cortex-a53-openwrt-25.12
-          path: official-proxy-packages/
+          name: pinned-proxy-packages-aarch64-cortex-a53-openwrt-25.12
+          path: pinned-proxy-packages/
           if-no-files-found: error
           retention-days: 1
 
@@ -617,12 +607,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
-      - name: Download verified official packages
+      - name: Download verified pinned packages
         if: ${{ github.event.inputs.profile == 'glinet_gl-mt3600be' }}
         uses: actions/download-artifact@v4
         with:
-          name: official-proxy-packages-aarch64-cortex-a53-openwrt-25.12
-          path: official-proxy-packages
+          name: pinned-proxy-packages-aarch64-cortex-a53-openwrt-25.12
+          path: pinned-proxy-packages
 
       - name: Set executable permissions
         run: |
@@ -736,7 +726,7 @@ jobs:
               -v "${{ github.workspace }}/glinet:/home/build/immortalwrt/files/etc/uci-defaults" \
               -v "${{ github.workspace }}/custom:/home/build/immortalwrt/files/etc/config" \
               -v "${{ github.workspace }}/shell:/home/build/immortalwrt/shell" \
-              -v "${{ github.workspace }}/official-proxy-packages:/home/build/immortalwrt/official-proxy-packages:ro" \
+              -v "${{ github.workspace }}/pinned-proxy-packages:/home/build/immortalwrt/pinned-proxy-packages:ro" \
               -v "${{ github.workspace }}/mediatek-filogic/build25.sh:/home/build/immortalwrt/build.sh" \
               -e PROFILE=$profile \
               -e INCLUDE_DOCKER=$include_docker \

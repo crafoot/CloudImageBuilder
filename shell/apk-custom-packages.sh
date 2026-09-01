@@ -26,10 +26,10 @@
 #CUSTOM_PACKAGES="$CUSTOM_PACKAGES clashoo luci-app-clashoo luci-i18n-clashoo-zh-cn"
 # 新增 Lucky大吉 by gdy666 & sirpdboy 
 #CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-app-lucky lucky luci-i18n-lucky-zh-cn"
-# 以下官方源码包仅用于 MT3600BE 的 25.12.1/A53 SDK 构建
+# 以下固定源码包仅用于 MT3600BE 的 25.12.1/A53 SDK 构建
 if [ "${PROFILE:-}" = "glinet_gl-mt3600be" ]; then
-  # daed、LuCI 和 geodata 由工作流使用 ImmortalWrt 官方源码编译
-  CUSTOM_PACKAGES="$CUSTOM_PACKAGES daed daed-geoip daed-geosite luci-app-daed luci-i18n-daed-zh-cn"
+  # dae、daed 和统一 LuCI 由工作流使用固定的 openwrt-daede 源码编译
+  CUSTOM_PACKAGES="$CUSTOM_PACKAGES dae daed luci-app-daede"
 fi
 # 任务设置 by sirpdboy
 #CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-app-taskplan luci-i18n-taskplan-zh-cn"
