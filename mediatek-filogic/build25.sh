@@ -20,13 +20,14 @@ if [[ " $CUSTOM_PACKAGES " == *" luci-i18n-daed-zh-cn "* ]] ||
   )
 
   mapfile -t proxy_apks < <(find "$OFFICIAL_PACKAGES_DIR" -maxdepth 1 -type f -name '*.apk' -print)
-  if [[ "${#proxy_apks[@]}" -ne 8 ]]; then
-    echo "Expected exactly eight verified daed and Nikki APKs, found ${#proxy_apks[@]}"
+  if [[ "${#proxy_apks[@]}" -ne 9 ]]; then
+    echo "Expected exactly nine verified daed, Nikki, and mihomo APKs, found ${#proxy_apks[@]}"
     exit 1
   fi
 
   for pattern in \
     'nikki-[0-9]*.apk' \
+    'mihomo-meta-[0-9]*.apk' \
     'luci-app-nikki-*.apk' \
     'luci-i18n-nikki-zh-cn-*.apk' \
     'daed-[0-9]*.apk' \

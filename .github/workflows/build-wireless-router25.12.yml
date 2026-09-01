@@ -538,7 +538,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: nikkinikki-org/OpenWrt-nikki
-          ref: bc29251f584d02fa7e346e62ced9040319604eec
+          ref: 3799926b147d7065ac98508f16951f8714e53659
           fetch-depth: 1
 
       - name: Checkout official ImmortalWrt packages source
@@ -562,7 +562,7 @@ jobs:
         env:
           ARCH: aarch64_cortex-a53-openwrt-25.12.1@sha256:441f8093008b41301881af4a3ba52e470c3ae579d423445274cf7051048a8eb6
           CONTAINER: immortalwrt/sdk
-          PACKAGES: nikki luci-app-nikki daed luci-app-daed
+          PACKAGES: nikki luci-app-nikki mihomo-meta daed luci-app-daed
           INDEX: 1
           NO_REFRESH_CHECK: true
 
@@ -574,6 +574,7 @@ jobs:
 
           for pattern in \
             'nikki-[0-9]*.apk' \
+            'mihomo-meta-[0-9]*.apk' \
             'luci-app-nikki-*.apk' \
             'luci-i18n-nikki-zh-cn-*.apk' \
             'daed-[0-9]*.apk' \
@@ -590,8 +591,8 @@ jobs:
           done
 
           mapfile -t built_apks < <(find official-proxy-packages -maxdepth 1 -type f -name '*.apk' -print)
-          if [[ "${#built_apks[@]}" -ne 8 ]]; then
-            echo "Expected exactly eight daed and Nikki APKs, found ${#built_apks[@]}"
+          if [[ "${#built_apks[@]}" -ne 9 ]]; then
+            echo "Expected exactly nine daed, Nikki, and mihomo APKs, found ${#built_apks[@]}"
             exit 1
           fi
 

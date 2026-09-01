@@ -36,9 +36,9 @@ fi
 # MosDNS
 #CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-app-mosdns luci-i18n-mosdns-zh-cn"
 
-# Nikki 由工作流使用官方源码和 ImmortalWrt 25.12.1 SDK 编译
+# Nikki 和它指定的 mihomo-meta 由同一官方源码提交及 25.12.1 SDK 编译
 if [ "${PROFILE:-}" = "glinet_gl-mt3600be" ]; then
-  CUSTOM_PACKAGES="$CUSTOM_PACKAGES nikki luci-app-nikki luci-i18n-nikki-zh-cn"
+  CUSTOM_PACKAGES="$CUSTOM_PACKAGES mihomo-meta nikki luci-app-nikki luci-i18n-nikki-zh-cn"
 fi
 #luci-app-openvpn-server 配置文件存在bug 因此请勿集成 避免报错 但你可以集成luci-i18n-openvpn-zh-cn
 #CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-i18n-openvpn-zh-cn"
