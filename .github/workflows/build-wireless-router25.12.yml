@@ -758,11 +758,20 @@ jobs:
           echo -e "\n $extra_content_ip" >> ${{ github.workspace }}/mediatek-filogic/info.md
           
           
+      - name: Upload firmware as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.inputs.profile }}-firmware-run-${{ github.run_number }}
+          path: ${{ github.workspace }}/bin/targets/${{ env.platform }}/*
+          if-no-files-found: error
+          retention-days: 30
+
       - name: Upload ImmortalWrt as release assets
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: ${{ github.event.inputs.profile }}
-          name: ImmortalWrt-Wireless
+          tag_name: ${{ github.event.inputs.profile }}-run-${{ github.run_number }}
+          name: "ImmortalWrt 25.12.x | ${{ github.event.inputs.profile }} | Run #${{ github.run_number }}"
+          target_commitish: ${{ github.sha }}
           body_path: ${{ github.workspace }}/mediatek-filogic/info.md
           files: |
             ${{ github.workspace }}/bin/targets/${{ env.platform }}/*
