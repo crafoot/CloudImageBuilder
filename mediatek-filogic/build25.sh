@@ -46,6 +46,27 @@ if [[ " $CUSTOM_PACKAGES " == *" luci-i18n-daed-zh-cn "* ]] ||
   echo "Official daed and Nikki packages verified and staged"
 fi
 
+# iStore is not in the ImmortalWrt ImageBuilder repository. When explicitly
+# enabled by the workflow, download one pinned bundle, verify it, and extract
+# only its APK payload. The embedded installer is deliberately not executed.
+if [[ " $CUSTOM_PACKAGES " == *" luci-app-store "* ]]; then
+  STORE_BUNDLE_URL="https://raw.githubusercontent.com/wukongdaily/apk/1244f9bd12a74747d7707bca504577c8ddf83ed5/run/arm64-a53/luci-app-store-0.2.0-r3_all.run"
+  STORE_BUNDLE_SHA256="fb01d78df688cfbf4e7aca62ff7fff0961cc1af82ec40d6235c2bc39063cff61"
+  STORE_ARCHIVE_OFFSET="18600"
+  STORE_ARCHIVE_SIZE="203835"
+  STORE_BUNDLE_PATH="/tmp/luci-app-store-0.2.0-r3_all.run"
+
+  curl -fL --retry 3 "$STORE_BUNDLE_URL" -o "$STORE_BUNDLE_PATH"
+  bash shell/prepare-store-packages.sh \
+    "$STORE_BUNDLE_PATH" \
+    /home/build/immortalwrt/packages \
+    "$STORE_BUNDLE_SHA256" \
+    "$STORE_ARCHIVE_OFFSET" \
+    "$STORE_ARCHIVE_SIZE"
+
+  CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-lib-taskd luci-lib-xterm taskd"
+fi
+
 
 
 # yml 传入的路由器型号 PROFILE
