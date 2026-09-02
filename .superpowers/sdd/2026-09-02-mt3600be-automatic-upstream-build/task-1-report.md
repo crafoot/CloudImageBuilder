@@ -63,3 +63,32 @@ The compare CLI fixture check returned exit 0 and JSON with `"decision":"unchang
 ## Self-review and concerns
 
 The implementation is limited to the requested files and preserves unrelated repository behavior. Canonicalization is recursive, so presentation metadata does not alter either full-state or group fingerprints. Missing or unstable candidate versions return `not-ready`; malformed references return `invalid` through the CLI. No known concerns remain for Task 1. The later resolver task should keep its lock schema field names aligned with the validators (`commit`/`digest`) or extend the validator deliberately.
+
+## Fix round
+
+Addressed review findings:
+
+- added `immortalwrt.commit` as a monitored comparison group;
+- normalized uppercase SHAs and digest prefixes before canonicalization/comparison;
+- made invalid CLI output include `decision`, `fingerprint: null`, and `changed_groups: []`;
+- added CLI tests for `not-ready` exit 2 and malformed reference/JSON exit 3.
+
+RED evidence for the fix tests:
+
+```text
+$ python3 -m unittest tests.test_mt3600be_sources -v
+Ran 14 tests in 0.087s
+FAILED (failures=2, errors=1)
+```
+
+The failures were the missing commit group, missing invalid-schema keys, and uppercase digest normalization.
+
+GREEN and final checks:
+
+```text
+$ python3 -m unittest tests.test_mt3600be_sources -v
+Ran 14 tests in 0.114s
+OK
+$ python3 -m py_compile scripts/mt3600be_sources.py tests/test_mt3600be_sources.py
+$ git diff --check
+```

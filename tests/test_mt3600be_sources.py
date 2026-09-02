@@ -2,6 +2,7 @@ import json
 import pathlib
 import subprocess
 import sys
+import tempfile
 import unittest
 
 from scripts.mt3600be_sources import (
@@ -55,6 +56,18 @@ class Mt3600beSourcesTests(unittest.TestCase):
         self.assertEqual(decision, "changed")
         self.assertIn("immortalwrt.imagebuilder", groups)
 
+    def test_changed_immortalwrt_commit_is_changed(self):
+        previous = {"schema": 1, "immortalwrt": {"version": "25.12.1", "commit": "a" * 40}}
+        candidate = {"schema": 1, "immortalwrt": {"version": "25.12.1", "commit": "b" * 40}}
+        decision, groups = compare_states(previous, candidate)
+        self.assertEqual(decision, "changed")
+        self.assertIn("immortalwrt.commit", groups)
+
+    def test_uppercase_references_compare_as_equal(self):
+        previous = {"schema": 1, "immortalwrt": {"version": "25.12.1", "commit": "a" * 40, "imagebuilder": {"digest": "sha256:" + "b" * 64}}}
+        candidate = {"schema": 1, "immortalwrt": {"version": "25.12.1", "commit": "A" * 40, "imagebuilder": {"digest": "SHA256:" + "B" * 64}}}
+        self.assertEqual(compare_states(previous, candidate), ("unchanged", []))
+
     def test_same_state_is_unchanged(self):
         decision, groups = compare_states(load_fixture("previous-lock.json"), load_fixture("candidate-same.json"))
         self.assertEqual(decision, "unchanged")
@@ -75,6 +88,30 @@ class Mt3600beSourcesTests(unittest.TestCase):
         self.assertEqual(output["decision"], "unchanged")
         self.assertIn("fingerprint", output)
         self.assertEqual(output["changed_groups"], [])
+
+    def test_cli_not_ready_returns_status_schema_and_exit_2(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json") as candidate:
+            json.dump({"schema": 1, "immortalwrt": {"version": "26.01.0"}}, candidate)
+            candidate.flush()
+            result = subprocess.run([sys.executable, "scripts/mt3600be_sources.py", "compare", "--previous", "-", "--candidate", candidate.name], cwd=ROOT, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 2)
+        output = json.loads(result.stdout)
+        self.assertEqual(output["decision"], "not-ready")
+        self.assertIn("fingerprint", output)
+        self.assertIn("changed_groups", output)
+
+    def test_cli_invalid_reference_or_json_returns_status_schema_and_exit_3(self):
+        cases = [("reference", '{"schema":1,"immortalwrt":{"version":"25.12.1","commit":"short"}}'), ("json", "{")]
+        for _, contents in cases:
+            with self.subTest(contents=contents), tempfile.NamedTemporaryFile(mode="w", suffix=".json") as candidate:
+                candidate.write(contents)
+                candidate.flush()
+                result = subprocess.run([sys.executable, "scripts/mt3600be_sources.py", "compare", "--previous", "-", "--candidate", candidate.name], cwd=ROOT, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 3)
+            output = json.loads(result.stdout)
+            self.assertEqual(output["decision"], "invalid")
+            self.assertIn("fingerprint", output)
+            self.assertIn("changed_groups", output)
 
 
 if __name__ == "__main__":

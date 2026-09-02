@@ -10,7 +10,7 @@ import sys
 
 
 _SHA = re.compile(r"^[0-9a-fA-F]{40}$")
-_DIGEST = re.compile(r"^sha256:[0-9a-fA-F]{64}$")
+_DIGEST = re.compile(r"^sha256:[0-9a-fA-F]{64}$", re.IGNORECASE)
 _VERSION = re.compile(r"^25\.12\.([0-9]+)$")
 _PRESENTATION_KEYS = {"display", "description", "label", "url", "name", "title"}
 
@@ -40,7 +40,16 @@ def select_stable_25_12(tags: list[str]) -> str:
 
 def _without_presentation(value):
     if isinstance(value, dict):
-        return {k: _without_presentation(v) for k, v in value.items() if k not in _PRESENTATION_KEYS}
+        normalized = {}
+        for key, child in value.items():
+            if key in _PRESENTATION_KEYS:
+                continue
+            if key in {"commit", "sha", "sha1", "sha256"}:
+                child = validate_sha(child)
+            elif key == "digest":
+                child = validate_digest(child)
+            normalized[key] = _without_presentation(child)
+        return normalized
     if isinstance(value, list):
         return [_without_presentation(item) for item in value]
     return value
@@ -64,7 +73,17 @@ def _group_value(state, path):
     return value
 
 
+def _canonical_group_value(value, path):
+    # Keep scalar references in the same key context as their source lock.
+    if value is None:
+        return canonical_bytes(None)
+    if path[-1] in {"commit", "sha", "sha1", "sha256", "digest"}:
+        return canonical_bytes({path[-1]: value})
+    return canonical_bytes(value)
+
+
 _GROUPS = {
+    "immortalwrt.commit": ("immortalwrt", "commit"),
     "immortalwrt.imagebuilder": ("immortalwrt", "imagebuilder"),
     "immortalwrt.sdk": ("immortalwrt", "sdk"),
     "immortalwrt.feeds": ("immortalwrt", "feeds"),
@@ -105,9 +124,9 @@ def compare_states(previous: dict | None, candidate: dict) -> tuple[str, list[st
     _validate_known_references(previous)
     changed = []
     for name, path in _GROUPS.items():
-        if canonical_bytes(_group_value(previous, path)) != canonical_bytes(_group_value(candidate, path)):
+        if _canonical_group_value(_group_value(previous, path), path) != _canonical_group_value(_group_value(candidate, path), path):
             changed.append(name)
-    if _group_value(previous, ("immortalwrt", "version")) != immortalwrt["version"]:
+    if _canonical_group_value(_group_value(previous, ("immortalwrt", "version")), ("version",)) != canonical_bytes(immortalwrt["version"]):
         changed.insert(0, "immortalwrt.version")
     return ("changed" if changed else "unchanged"), changed
 
@@ -121,7 +140,7 @@ def _cli_compare(args):
         print(json.dumps(output, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
         return {"unchanged": 0, "changed": 0, "not-ready": 2}[decision]
     except (OSError, json.JSONDecodeError, ValueError, TypeError) as error:
-        print(json.dumps({"decision": "invalid", "error": str(error)}, sort_keys=True, separators=(",", ":")))
+        print(json.dumps({"decision": "invalid", "fingerprint": None, "changed_groups": [], "error": str(error)}, sort_keys=True, separators=(",", ":")))
         return 3
 
 
