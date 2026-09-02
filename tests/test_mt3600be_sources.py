@@ -1,3 +1,4 @@
+import base64
 import json
 import pathlib
 import re
@@ -5,6 +6,9 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.request
+
+from scripts import mt3600be_sources as sources
 
 from scripts.mt3600be_sources import (
     FixtureTransport,
@@ -431,6 +435,12 @@ class ResolverTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "SDK"):
             resolve_candidate(transport, None)
 
+    def test_selects_highest_shared_tag_from_second_registry_page(self):
+        candidate = resolve_candidate(self._transport("registry-pagination.json", "feed-indexes.json", "github-responses.json", "daede-ready.json"), None)
+        self.assertEqual(candidate["immortalwrt"]["version"], "25.12.2")
+        self.assertEqual(candidate["immortalwrt"]["imagebuilder"]["tag"], "mediatek-filogic-openwrt-25.12.2")
+        self.assertEqual(candidate["immortalwrt"]["sdk"]["tag"], "aarch64_cortex-a53-openwrt-25.12.2")
+
     def test_selects_highest_version_with_both_exact_target_and_a53_sdk_tags(self):
         candidate = resolve_candidate(self._transport("registry-shared-tags.json", "feed-indexes.json", "github-responses.json", "daede-ready.json"), None)
         self.assertEqual(candidate["immortalwrt"]["version"], "25.12.2")
@@ -440,7 +450,7 @@ class ResolverTests(unittest.TestCase):
     def test_falls_back_when_highest_target_tag_has_no_matching_a53_sdk_tag(self):
         fixture = load_fixture("registry-shared-tags.json")
         for response in fixture["responses"]:
-            if response["url"].endswith("/sdk/tags/list"):
+            if "/sdk/tags/list?" in response["url"]:
                 response["json"]["tags"].remove("aarch64_cortex-a53-openwrt-25.12.2")
         candidate = resolve_candidate(FixtureTransport.merge(
             FixtureTransport(fixture), FixtureTransport(load_fixture("feed-indexes.json")),
@@ -478,6 +488,107 @@ class ResolverTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "feed"):
             resolve_candidate(transport, load_fixture("previous-lock.json"))
+
+
+class RegistryPaginationTests(unittest.TestCase):
+    def _first_page_transport(self, next_url):
+        url = "https://registry-1.docker.io/v2/immortalwrt/imagebuilder/tags/list?n=100"
+        return FixtureTransport({"responses": [{"url": url, "json": {"tags": ["mediatek-filogic-openwrt-25.12.1"]}, "headers": {"link": f"<{next_url}>; rel=\"next\""}}]})
+
+    def test_rejects_cross_host_pagination_link(self):
+        transport = self._first_page_transport("https://example.invalid/v2/immortalwrt/imagebuilder/tags/list?n=100&last=tag")
+        with self.assertRaisesRegex(ValueError, "pagination"):
+            sources._list_registry_tags(transport, "immortalwrt/imagebuilder")
+
+    def test_rejects_cyclic_pagination_link(self):
+        url = "https://registry-1.docker.io/v2/immortalwrt/imagebuilder/tags/list?n=100"
+        next_url = f"{url}&last=first"
+        transport = FixtureTransport({"responses": [
+            {"url": url, "json": {"tags": ["first"]}, "headers": {"link": f"<{next_url}>; rel=\"next\""}},
+            {"url": next_url, "json": {"tags": ["second"]}, "headers": {"link": f"<{url}>; rel=\"next\""}},
+        ]})
+        with self.assertRaisesRegex(ValueError, "pagination"):
+            sources._list_registry_tags(transport, "immortalwrt/imagebuilder")
+
+    def test_rejects_invalid_pagination_link_shape(self):
+        transport = self._first_page_transport("https://registry-1.docker.io/v2/immortalwrt/sdk/tags/list?n=100&last=tag")
+        with self.assertRaisesRegex(ValueError, "pagination"):
+            sources._list_registry_tags(transport, "immortalwrt/imagebuilder")
+
+    def test_rejects_unsafe_pagination_queries(self):
+        for query in (
+            "n=99&last=tag",
+            "n=100",
+            "n=100&last=",
+            "n=100&last=tag&extra=value",
+        ):
+            with self.subTest(query=query):
+                transport = self._first_page_transport(
+                    f"https://registry-1.docker.io/v2/immortalwrt/imagebuilder/tags/list?{query}"
+                )
+                with self.assertRaisesRegex(ValueError, "pagination"):
+                    sources._list_registry_tags(transport, "immortalwrt/imagebuilder")
+
+    def test_rejects_non_next_link_relation(self):
+        transport = self._first_page_transport(
+            "https://registry-1.docker.io/v2/immortalwrt/imagebuilder/tags/list?n=100&last=tag"
+        )
+        response = transport.responses[next(iter(transport.responses))][0]
+        response["headers"]["link"] = response["headers"]["link"].replace('rel="next"', 'rel="last"')
+        with self.assertRaisesRegex(ValueError, "pagination"):
+            sources._list_registry_tags(transport, "immortalwrt/imagebuilder")
+
+
+class RedirectPolicyTests(unittest.TestCase):
+    def _redirect(self, destination):
+        handler = sources._AllowlistedRedirectHandler()
+        request = urllib.request.Request("https://registry-1.docker.io/v2/immortalwrt/imagebuilder/tags/list?n=100", headers={"Authorization": "Bearer secret"})
+        return handler.redirect_request(request, None, 302, "Found", {}, destination)
+
+    def test_allows_same_host_redirect_and_keeps_authorization(self):
+        redirected = self._redirect("https://registry-1.docker.io/v2/immortalwrt/imagebuilder/tags/list?n=100&last=tag")
+        self.assertEqual(redirected.full_url, "https://registry-1.docker.io/v2/immortalwrt/imagebuilder/tags/list?n=100&last=tag")
+        self.assertEqual(redirected.get_header("Authorization"), "Bearer secret")
+
+    def test_strips_authorization_on_allowed_cross_host_redirect(self):
+        redirected = self._redirect("https://auth.docker.io/token?service=registry.docker.io")
+        self.assertIsNone(redirected.get_header("Authorization"))
+
+    def test_rejects_forbidden_redirect_destinations(self):
+        for destination in (
+            "http://registry-1.docker.io/v2/immortalwrt/imagebuilder/tags/list",
+            "https://example.invalid/v2/immortalwrt/imagebuilder/tags/list",
+            "https://user:pass@registry-1.docker.io/v2/immortalwrt/imagebuilder/tags/list",
+            "https://registry-1.docker.io:444/v2/immortalwrt/imagebuilder/tags/list",
+        ):
+            with self.subTest(destination=destination), self.assertRaisesRegex(ValueError, "allowlisted"):
+                self._redirect(destination)
+
+
+class ParserAndFixtureTests(unittest.TestCase):
+    def test_rejects_duplicate_makefile_assignments(self):
+        raw = ("PKG_VERSION:=1\nPKG_VERSION:=2\nPKG_RELEASE:=1\nPKG_SOURCE:=source.tar.gz\nPKG_HASH:=" + "a" * 64 + "\n").encode()
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            sources._parse_makefile(raw, "package")
+
+    def test_rejects_duplicate_pin_assignments(self):
+        raw = (
+            "DAE_REPOSITORY=daeuniverse/dae\nDAE_COMMIT=" + "a" * 40 + "\n"
+            "DAED_REPOSITORY=daeuniverse/daed\nDAED_COMMIT=" + "b" * 40 + "\n"
+            "DAE_WING_REPOSITORY=daeuniverse/dae-wing\nDAE_WING_COMMIT=" + "c" * 40 + "\n"
+            "DAE_SOURCE_HASH=" + "d" * 64 + "\nDAE_SOURCE_HASH=" + "e" * 64 + "\n"
+        ).encode()
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            sources._parse_pins(raw)
+
+    def test_hashes_non_utf8_nul_feed_bytes_from_base64_fixture_field(self):
+        values = [b"base\x00\xff", b"luci\x80", b"packages\x00\xfe"]
+        responses = [
+            {"url": template.format(version="25.12.1"), "bytes_base64": base64.b64encode(value).decode("ascii"), "headers": {}}
+            for template, value in zip(sources._FEED_URLS, values)
+        ]
+        feeds = sources._resolve_feeds(FixtureTransport({"responses": responses}), "25.12.1")
+        self.assertEqual([record["sha256"] for record in feeds["records"]], [sources._sha256(value) for _, value in sorted(zip(sources._FEED_URLS, values))])
 
 
 class GitHubResolverTests(unittest.TestCase):

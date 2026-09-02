@@ -2,6 +2,8 @@
 """Canonical source-lock validation and change decision for MT3600BE."""
 
 import argparse
+import base64
+import binascii
 import copy
 import datetime
 import hashlib
@@ -26,6 +28,8 @@ _CANONICAL_FINGERPRINT = re.compile(r"^[0-9a-f]{64}$")
 _STAGING_BRANCH = re.compile(r"^auto-update-staging-[1-9][0-9]*-[1-9][0-9]*$")
 _IMAGEBUILDER_TAG_PREFIX = "mediatek-filogic-openwrt-"
 _SDK_ARCH_TAG_PREFIX = "aarch64_cortex-a53-openwrt-"
+_TAG_PAGE_SIZE = 100
+_MAX_TAG_PAGES = 100
 _PRESENTATION_KEYS = {"display", "description", "label", "url", "name", "title"}
 _ALLOWED_HOSTS = {
     "registry-1.docker.io",
@@ -69,11 +73,14 @@ _RUN7_COMPATIBILITY = MappingProxyType(
 class Transport:
     """Small, allowlisted JSON/bytes HTTP transport used by source resolution."""
 
+    def __init__(self):
+        self._opener = urllib.request.build_opener(_AllowlistedRedirectHandler())
+
     def _request(self, url: str, headers: dict[str, str] | None = None) -> tuple[bytes, dict[str, str]]:
         _validate_url(url)
         request = urllib.request.Request(url, headers=headers or {})
         try:
-            with urllib.request.urlopen(request, timeout=30) as response:  # nosec B310: URL is allowlisted above
+            with self._opener.open(request, timeout=30) as response:
                 return response.read(), {key.lower(): value for key, value in response.headers.items()}
         except urllib.error.HTTPError as error:
             if error.code != 401:
@@ -139,6 +146,14 @@ class FixtureTransport(Transport):
 
     def get_bytes(self, url: str) -> bytes:
         response = self._next(url)
+        if "bytes_base64" in response:
+            value = response["bytes_base64"]
+            if not isinstance(value, str) or "bytes" in response:
+                raise ValueError(f"fixture base64 bytes response is invalid for {url}")
+            try:
+                return base64.b64decode(value, validate=True)
+            except (binascii.Error, ValueError) as error:
+                raise ValueError(f"fixture base64 bytes response is invalid for {url}") from error
         value = response.get("bytes")
         if not isinstance(value, str):
             raise ValueError(f"fixture bytes response missing for {url}")
@@ -146,9 +161,94 @@ class FixtureTransport(Transport):
 
 
 def _validate_url(url: str) -> None:
-    parsed = urllib.parse.urlsplit(url)
-    if parsed.scheme != "https" or parsed.hostname not in _ALLOWED_HOSTS:
+    if not isinstance(url, str):
+        raise ValueError("source URL is not allowlisted")
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        port = parsed.port
+    except ValueError as error:
+        raise ValueError("source URL is not allowlisted") from error
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname not in _ALLOWED_HOSTS
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in (None, 443)
+    ):
         raise ValueError("source URL host is not allowlisted")
+
+
+class _AllowlistedRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Reject unsafe redirects and never forward auth across hosts."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        _validate_url(newurl)
+        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirected is None:
+            return None
+        source_host = urllib.parse.urlsplit(req.full_url).hostname
+        destination_host = urllib.parse.urlsplit(redirected.full_url).hostname
+        if source_host != destination_host:
+            for mapping in (redirected.headers, redirected.unredirected_hdrs):
+                for header in tuple(mapping):
+                    if header.lower() == "authorization":
+                        del mapping[header]
+        return redirected
+
+
+def _registry_tags_url(repository: str) -> str:
+    return f"https://registry-1.docker.io/v2/{repository}/tags/list?n={_TAG_PAGE_SIZE}"
+
+
+def _validate_registry_tags_url(url: str, repository: str, *, first_page: bool) -> None:
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        _validate_url(url)
+        if parsed.path != f"/v2/{repository}/tags/list" or parsed.fragment:
+            raise ValueError
+        pairs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
+        expected = [("n", str(_TAG_PAGE_SIZE))] if first_page else None
+        if first_page:
+            if pairs != expected:
+                raise ValueError
+        elif len(pairs) != 2 or {key for key, _ in pairs} != {"n", "last"}:
+            raise ValueError
+        elif any(not value for _, value in pairs) or dict(pairs)["n"] != str(_TAG_PAGE_SIZE):
+            raise ValueError
+    except (ValueError, UnicodeError) as error:
+        raise ValueError("invalid registry pagination link") from error
+
+
+def _next_registry_page(link: str, repository: str) -> str:
+    match = re.fullmatch(r'\s*<([^<>\s]+)>\s*;\s*rel=(?:"next"|next)\s*', link)
+    if not match:
+        raise ValueError("invalid registry pagination link")
+    url = match.group(1)
+    _validate_registry_tags_url(url, repository, first_page=False)
+    return url
+
+
+def _list_registry_tags(transport: Transport, repository: str) -> list[str]:
+    url = _registry_tags_url(repository)
+    tags = []
+    seen = set()
+    for _ in range(_MAX_TAG_PAGES):
+        _validate_registry_tags_url(url, repository, first_page=not seen)
+        if url in seen:
+            raise ValueError("invalid registry pagination link: cycle")
+        seen.add(url)
+        page, headers = transport.get_json(url)
+        page_tags = page.get("tags")
+        if not isinstance(page_tags, list) or not all(isinstance(tag, str) for tag in page_tags):
+            raise ValueError("invalid registry tags response")
+        tags.extend(page_tags)
+        link = headers.get("link")
+        if link is None:
+            return tags
+        if not isinstance(link, str):
+            raise ValueError("invalid registry pagination link")
+        url = _next_registry_page(link, repository)
+    raise ValueError("invalid registry pagination link: page limit")
 
 
 def _sha256(value: bytes) -> str:
@@ -195,6 +295,8 @@ def _parse_makefile(raw: bytes, label: str) -> dict:
             key, value = match.groups()
             if "$" in value or "`" in value or not value:
                 raise ValueError(f"unsafe Makefile assignment {key}")
+            if key in assignments:
+                raise ValueError(f"duplicate Makefile assignment {key}")
             assignments[key] = value
     if set(assignments) != set(_PACKAGE_ASSIGNMENTS):
         raise ValueError(f"{label} Makefile must contain only required anchored package assignments")
@@ -220,6 +322,8 @@ def _parse_pins(raw: bytes) -> dict:
         key, value = match.groups()
         if key not in _PIN_KEYS or "$" in value or "`" in value or not value:
             raise ValueError("ci/pins.env contains an unsafe or unexpected assignment")
+        if key in pins:
+            raise ValueError(f"duplicate ci/pins.env assignment {key}")
         pins[key] = value
     if set(pins) != _PIN_KEYS:
         raise ValueError("ci/pins.env is missing required pins")
@@ -253,19 +357,19 @@ def _docker_manifest_digest(transport: Transport, repository: str, tag: str) -> 
 
 
 def _resolve_registry(transport: Transport) -> tuple[str, dict, dict]:
-    image_tags, _ = transport.get_json("https://registry-1.docker.io/v2/immortalwrt/imagebuilder/tags/list")
     try:
-        sdk_tags, _ = transport.get_json("https://registry-1.docker.io/v2/immortalwrt/sdk/tags/list")
+        image_tags = _list_registry_tags(transport, "immortalwrt/imagebuilder")
+        sdk_tags = _list_registry_tags(transport, "immortalwrt/sdk")
     except (OSError, ValueError) as error:
         raise ValueError("SDK exact version tag is missing") from error
     imagebuilder_versions = [
         tag.removeprefix(_IMAGEBUILDER_TAG_PREFIX)
-        for tag in image_tags.get("tags", [])
+        for tag in image_tags
         if isinstance(tag, str) and tag.startswith(_IMAGEBUILDER_TAG_PREFIX)
     ]
     sdk_versions = {
         tag.removeprefix(_SDK_ARCH_TAG_PREFIX)
-        for tag in sdk_tags.get("tags", [])
+        for tag in sdk_tags
         if isinstance(tag, str) and tag.startswith(_SDK_ARCH_TAG_PREFIX)
     }
     try:
