@@ -431,6 +431,25 @@ class ResolverTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "SDK"):
             resolve_candidate(transport, None)
 
+    def test_selects_highest_version_with_both_exact_target_and_a53_sdk_tags(self):
+        candidate = resolve_candidate(self._transport("registry-shared-tags.json", "feed-indexes.json", "github-responses.json", "daede-ready.json"), None)
+        self.assertEqual(candidate["immortalwrt"]["version"], "25.12.2")
+        self.assertEqual(candidate["immortalwrt"]["imagebuilder"]["tag"], "mediatek-filogic-openwrt-25.12.2")
+        self.assertEqual(candidate["immortalwrt"]["sdk"]["tag"], "aarch64_cortex-a53-openwrt-25.12.2")
+
+    def test_falls_back_when_highest_target_tag_has_no_matching_a53_sdk_tag(self):
+        fixture = load_fixture("registry-shared-tags.json")
+        for response in fixture["responses"]:
+            if response["url"].endswith("/sdk/tags/list"):
+                response["json"]["tags"].remove("aarch64_cortex-a53-openwrt-25.12.2")
+        candidate = resolve_candidate(FixtureTransport.merge(
+            FixtureTransport(fixture), FixtureTransport(load_fixture("feed-indexes.json")),
+            FixtureTransport(load_fixture("github-responses.json")), FixtureTransport(load_fixture("daede-ready.json")),
+        ), None)
+        self.assertEqual(candidate["immortalwrt"]["version"], "25.12.1")
+        self.assertEqual(candidate["immortalwrt"]["imagebuilder"]["tag"], "mediatek-filogic-openwrt-25.12.1")
+        self.assertEqual(candidate["immortalwrt"]["sdk"]["tag"], "aarch64_cortex-a53-openwrt-25.12.1")
+
     def test_changed_feed_payload_changes_combined_digest_without_version_change(self):
         ready = self._transport("registry-responses.json", "feed-indexes.json", "github-responses.json", "daede-ready.json")
         changed = self._transport("registry-responses.json", "feed-indexes.json", "github-responses.json", "daede-ready.json")

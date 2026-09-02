@@ -1,0 +1,14 @@
+{
+  "responses": [
+    {"url": "https://registry-1.docker.io/v2/immortalwrt/imagebuilder/tags/list", "json": {"tags": ["mediatek-filogic-openwrt-25.12.1", "mediatek-filogic-openwrt-25.12.2"]}, "headers": {}},
+    {"url": "https://registry-1.docker.io/v2/immortalwrt/sdk/tags/list", "json": {"tags": ["aarch64_cortex-a53-openwrt-25.12.1", "aarch64_cortex-a53-openwrt-25.12.2"]}, "headers": {}},
+    {"url": "https://registry-1.docker.io/v2/immortalwrt/imagebuilder/manifests/mediatek-filogic-openwrt-25.12.1", "json": {"schemaVersion": 2}, "headers": {"docker-content-digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}},
+    {"url": "https://registry-1.docker.io/v2/immortalwrt/sdk/manifests/aarch64_cortex-a53-openwrt-25.12.1", "json": {"schemaVersion": 2}, "headers": {"docker-content-digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}},
+    {"url": "https://registry-1.docker.io/v2/immortalwrt/imagebuilder/manifests/mediatek-filogic-openwrt-25.12.2", "json": {"schemaVersion": 2}, "headers": {"docker-content-digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}},
+    {"url": "https://registry-1.docker.io/v2/immortalwrt/sdk/manifests/aarch64_cortex-a53-openwrt-25.12.2", "json": {"schemaVersion": 2}, "headers": {"docker-content-digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}},
+    {"url": "https://api.github.com/repos/immortalwrt/immortalwrt/commits/immortalwrt-25.12.2", "json": {"sha": "7777777777777777777777777777777777777777"}, "headers": {}},
+    {"url": "https://downloads.immortalwrt.org/releases/25.12.2/packages/aarch64_cortex-a53/base/Packages.adb", "bytes": "base feed 25.12.2\n", "headers": {}},
+    {"url": "https://downloads.immortalwrt.org/releases/25.12.2/packages/aarch64_cortex-a53/luci/Packages.adb", "bytes": "luci feed 25.12.2\n", "headers": {}},
+    {"url": "https://downloads.immortalwrt.org/releases/25.12.2/packages/aarch64_cortex-a53/packages/Packages.adb", "bytes": "packages feed 25.12.2\n", "headers": {}}
+  ]
+}

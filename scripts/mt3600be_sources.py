@@ -263,11 +263,17 @@ def _resolve_registry(transport: Transport) -> tuple[str, dict, dict]:
         for tag in image_tags.get("tags", [])
         if isinstance(tag, str) and tag.startswith(_IMAGEBUILDER_TAG_PREFIX)
     ]
-    version = select_stable_25_12(imagebuilder_versions)
+    sdk_versions = {
+        tag.removeprefix(_SDK_ARCH_TAG_PREFIX)
+        for tag in sdk_tags.get("tags", [])
+        if isinstance(tag, str) and tag.startswith(_SDK_ARCH_TAG_PREFIX)
+    }
+    try:
+        version = select_stable_25_12([version for version in imagebuilder_versions if version in sdk_versions])
+    except ValueError as error:
+        raise ValueError("no shared exact target and A53 SDK tag") from error
     imagebuilder_tag = f"{_IMAGEBUILDER_TAG_PREFIX}{version}"
     sdk_tag = f"{_SDK_ARCH_TAG_PREFIX}{version}"
-    if sdk_tag not in sdk_tags.get("tags", []):
-        raise ValueError("SDK exact architecture tag is missing")
     imagebuilder = {"repository": "immortalwrt/imagebuilder", "tag": imagebuilder_tag, "digest": _docker_manifest_digest(transport, "immortalwrt/imagebuilder", imagebuilder_tag)}
     sdk = {"repository": "immortalwrt/sdk", "tag": sdk_tag, "digest": _docker_manifest_digest(transport, "immortalwrt/sdk", sdk_tag)}
     return version, imagebuilder, sdk
