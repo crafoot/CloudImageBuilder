@@ -561,6 +561,36 @@ class RegistryPaginationTests(unittest.TestCase):
             ["mediatek-filogic-openwrt-25.12.1", "mediatek-filogic-openwrt-25.12.2"],
         )
 
+    def test_follows_bearer_challenge_before_reading_tags(self):
+        tags_url = "https://registry-1.docker.io/v2/immortalwrt/imagebuilder/tags/list?n=100"
+        token_url = (
+            "https://auth.docker.io/token?service=registry.docker.io"
+            "&scope=repository%3Aimmortalwrt%2Fimagebuilder%3Apull"
+        )
+
+        class ChallengedTagsTransport:
+            def get_json(self, url, headers=None):
+                if url == token_url:
+                    return {"token": "tag-list-token"}, {}
+                if url != tags_url:
+                    raise ValueError(f"unexpected URL {url}")
+                if headers == {"Authorization": "Bearer tag-list-token"}:
+                    return {"name": "immortalwrt/imagebuilder", "tags": ["mediatek-filogic-openwrt-25.12.1"]}, {}
+                return {
+                    "errors": [{"code": "UNAUTHORIZED"}],
+                }, {
+                    "www-authenticate": (
+                        'Bearer realm="https://auth.docker.io/token",'
+                        'service="registry.docker.io",'
+                        'scope="repository:immortalwrt/imagebuilder:pull"'
+                    )
+                }
+
+        self.assertEqual(
+            sources._list_registry_tags(ChallengedTagsTransport(), "immortalwrt/imagebuilder"),
+            ["mediatek-filogic-openwrt-25.12.1"],
+        )
+
 
 class RedirectPolicyTests(unittest.TestCase):
     def _redirect(self, destination):

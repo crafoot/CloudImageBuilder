@@ -229,6 +229,23 @@ def _next_registry_page(link: str, current_url: str, repository: str) -> str:
     return url
 
 
+def _registry_json_with_bearer(transport: Transport, url: str) -> tuple[dict, dict[str, str]]:
+    document, response_headers = transport.get_json(url)
+    challenge = response_headers.get("www-authenticate")
+    if not challenge:
+        return document, response_headers
+    match = re.fullmatch(r'Bearer realm="([^"]+)",service="([^"]+)",scope="([^"]+)"', challenge)
+    if not match:
+        raise ValueError("unsupported registry authentication challenge")
+    realm, service, scope = match.groups()
+    query = urllib.parse.urlencode({"service": service, "scope": scope})
+    token_document, _ = transport.get_json(f"{realm}?{query}")
+    token = token_document.get("token")
+    if not isinstance(token, str) or not token:
+        raise ValueError("registry token response is invalid")
+    return transport.get_json(url, {"Authorization": f"Bearer {token}"})
+
+
 def _list_registry_tags(transport: Transport, repository: str) -> list[str]:
     url = _registry_tags_url(repository)
     tags = []
@@ -238,7 +255,7 @@ def _list_registry_tags(transport: Transport, repository: str) -> list[str]:
         if url in seen:
             raise ValueError("invalid registry pagination link: cycle")
         seen.add(url)
-        page, headers = transport.get_json(url)
+        page, headers = _registry_json_with_bearer(transport, url)
         page_tags = page.get("tags")
         if not isinstance(page_tags, list) or not all(isinstance(tag, str) for tag in page_tags):
             raise ValueError("invalid registry tags response")
@@ -358,19 +375,7 @@ def _parse_pins(raw: bytes) -> dict:
 
 def _docker_manifest_digest(transport: Transport, repository: str, tag: str) -> str:
     manifest = f"https://registry-1.docker.io/v2/{repository}/manifests/{tag}"
-    _, response_headers = transport.get_json(manifest)
-    challenge = response_headers.get("www-authenticate")
-    if challenge:
-        match = re.fullmatch(r'Bearer realm="([^"]+)",service="([^"]+)",scope="([^"]+)"', challenge)
-        if not match:
-            raise ValueError("unsupported registry authentication challenge")
-        realm, service, scope = match.groups()
-        query = urllib.parse.urlencode({"service": service, "scope": scope})
-        token_document, _ = transport.get_json(f"{realm}?{query}")
-        token = token_document.get("token")
-        if not isinstance(token, str) or not token:
-            raise ValueError("registry token response is invalid")
-        _, response_headers = transport.get_json(manifest, {"Authorization": f"Bearer {token}"})
+    _, response_headers = _registry_json_with_bearer(transport, manifest)
     digest = response_headers.get("docker-content-digest")
     return validate_digest(digest)
 
