@@ -520,6 +520,16 @@ on:
       pppoe_password:
         description: "宽带密码 (若启用PPPoE)"
         required: false
+      automatic_update:
+        description: "自动上游构建（仅上传 Artifact）"
+        required: false
+        default: false
+        type: boolean
+      source_fingerprint:
+        description: "自动上游构建的已验证源指纹"
+        required: false
+        default: ''
+        type: string
 
 
 permissions:
@@ -527,32 +537,75 @@ permissions:
 
 jobs:
   build_proxy_packages:
-    name: Build daede and Nikki from pinned sources
+    name: Build MT3600BE proxy packages from locked sources
     if: ${{ github.event.inputs.profile == 'glinet_gl-mt3600be' }}
     runs-on: ubuntu-22.04
     permissions:
       contents: read
 
     steps:
+      - name: Checkout current CloudImageBuilder configuration
+        uses: actions/checkout@v6
+        with:
+          path: build-config
+          fetch-depth: 1
+
+      - name: Load validated MT3600BE build environment
+        id: build_env
+        shell: bash
+        run: |
+          set -euo pipefail
+          lock_path="$GITHUB_WORKSPACE/build-config/config/mt3600be-sources.lock.json"
+          build_env_args=(build-env --lock "$lock_path")
+          if [[ ! -e "$lock_path" ]]; then
+            build_env_args+=(--compat-run7)
+          fi
+          python3 "$GITHUB_WORKSPACE/build-config/scripts/mt3600be_sources.py" "${build_env_args[@]}" > "$GITHUB_OUTPUT"
+
+          sdk_reference="$(sed -n 's/^SDK_ARCH_REFERENCE=//p' "$GITHUB_OUTPUT")"
+          sdk_tag_and_digest="${sdk_reference#immortalwrt/sdk:}"
+          if [[ "$sdk_tag_and_digest" == aarch64_cortex-a53-openwrt-* ]]; then
+            sdk_action_arch="$sdk_tag_and_digest"
+          else
+            sdk_version="${sdk_tag_and_digest%%@*}"
+            sdk_digest="${sdk_tag_and_digest#*@}"
+            sdk_action_arch="aarch64_cortex-a53-openwrt-${sdk_version}@${sdk_digest}"
+          fi
+          printf 'SDK_ACTION_ARCH=%s\n' "$sdk_action_arch" >> "$GITHUB_OUTPUT"
+
+      - name: Summarize MT3600BE locked inputs
+        shell: bash
+        run: |
+          {
+            echo '## MT3600BE locked package inputs'
+            echo
+            echo "- ImmortalWrt: ${{ steps.build_env.outputs.IMMORTAL_VERSION }}"
+            echo "- SDK: ${{ steps.build_env.outputs.SDK_ARCH_REFERENCE }}"
+            echo "- ImageBuilder: ${{ steps.build_env.outputs.IMAGEBUILDER_REFERENCE }}"
+            echo "- Nikki: ${{ steps.build_env.outputs.NIKKI_REF }}"
+            echo "- daede: ${{ steps.build_env.outputs.DAEDE_REF }}"
+            echo "- Source fingerprint: ${{ steps.build_env.outputs.SOURCE_FINGERPRINT }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Checkout official Nikki source
         uses: actions/checkout@v6
         with:
           repository: nikkinikki-org/OpenWrt-nikki
-          ref: 3799926b147d7065ac98508f16951f8714e53659
+          ref: ${{ steps.build_env.outputs.NIKKI_REF }}
           fetch-depth: 1
 
       - name: Checkout pinned openwrt-daede source
         uses: actions/checkout@v6
         with:
           repository: kenzok8/openwrt-daede
-          ref: a6c3ced3c7e095630368de96fbf9f2ba03760672
+          ref: ${{ steps.build_env.outputs.DAEDE_REF }}
           path: openwrt-daede
           fetch-depth: 1
 
-      - name: Build proxy packages with the ImmortalWrt 25.12.1 SDK
+      - name: Build proxy packages with the locked ImmortalWrt SDK
         uses: openwrt/gh-action-sdk@f5813d30eeef3534b58ac7e79c5d8842b6035434
         env:
-          ARCH: aarch64_cortex-a53-openwrt-25.12.1@sha256:441f8093008b41301881af4a3ba52e470c3ae579d423445274cf7051048a8eb6
+          ARCH: ${{ steps.build_env.outputs.SDK_ACTION_ARCH }}
           CONTAINER: immortalwrt/sdk
           PACKAGES: nikki luci-app-nikki mihomo-meta dae daed luci-app-daede
           INDEX: 1
@@ -606,6 +659,33 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
+
+      - name: Load validated MT3600BE firmware environment
+        if: ${{ github.event.inputs.profile == 'glinet_gl-mt3600be' }}
+        shell: bash
+        env:
+          AUTOMATIC_UPDATE: ${{ github.event.inputs.automatic_update }}
+          REQUESTED_SOURCE_FINGERPRINT: ${{ github.event.inputs.source_fingerprint }}
+        run: |
+          set -euo pipefail
+          lock_path="$GITHUB_WORKSPACE/config/mt3600be-sources.lock.json"
+          build_env_args=(build-env --lock "$lock_path")
+          if [[ ! -e "$lock_path" ]]; then
+            build_env_args+=(--compat-run7)
+          fi
+          build_env_path="$RUNNER_TEMP/mt3600be-build.env"
+          python3 "$GITHUB_WORKSPACE/scripts/mt3600be_sources.py" "${build_env_args[@]}" > "$build_env_path"
+          cat "$build_env_path" >> "$GITHUB_ENV"
+
+          locked_fingerprint="$(sed -n 's/^SOURCE_FINGERPRINT=//p' "$build_env_path")"
+          if [[ "$AUTOMATIC_UPDATE" == 'true' ]]; then
+            if [[ -z "$REQUESTED_SOURCE_FINGERPRINT" || "$REQUESTED_SOURCE_FINGERPRINT" != "$locked_fingerprint" ]]; then
+              echo 'Automatic build source fingerprint does not match the validated lock'
+              exit 1
+            fi
+          fi
+          printf 'MT3600BE_SOURCE_FINGERPRINT=%s\n' "$locked_fingerprint" >> "$GITHUB_ENV"
+          printf 'MT3600BE_LOCKED_BUILD=true\n' >> "$GITHUB_ENV"
 
       - name: Download verified pinned packages
         if: ${{ github.event.inputs.profile == 'glinet_gl-mt3600be' }}
@@ -719,6 +799,11 @@ jobs:
                   fi
                   ;;
             esac
+
+            docker_image="immortalwrt/imagebuilder:$tag"
+            if [[ "$profile" == 'glinet_gl-mt3600be' ]]; then
+              docker_image="${IMAGEBUILDER_REFERENCE:?MT3600BE ImageBuilder reference is missing}"
+            fi
           
             docker run --rm -i \
               --user root \
@@ -733,8 +818,23 @@ jobs:
               -e ENABLE_PPPOE=${{ inputs.enable_pppoe }} \
               -e PPPOE_ACCOUNT=${{ inputs.pppoe_account }} \
               -e PPPOE_PASSWORD=${{ inputs.pppoe_password }} \
-            immortalwrt/imagebuilder:$tag /bin/bash /home/build/immortalwrt/build.sh
+              -e MT3600BE_LOCKED_BUILD="${MT3600BE_LOCKED_BUILD:-}" \
+              -e MT3600BE_SOURCE_FINGERPRINT="${MT3600BE_SOURCE_FINGERPRINT:-}" \
+            "$docker_image" /bin/bash /home/build/immortalwrt/build.sh
           
+
+      - name: Validate MT3600BE firmware manifest
+        if: ${{ github.event.inputs.profile == 'glinet_gl-mt3600be' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          target_dir="$GITHUB_WORKSPACE/bin/targets/mediatek/filogic"
+          mapfile -t manifests < <(find "$target_dir" -maxdepth 1 -type f -name '*glinet_gl-mt3600be*.manifest' -print)
+          if [[ "${#manifests[@]}" -ne 1 ]]; then
+            echo "Expected exactly one MT3600BE manifest, found ${#manifests[@]}"
+            exit 1
+          fi
+          python3 "$GITHUB_WORKSPACE/scripts/validate_mt3600be_manifest.py" "${manifests[0]}"
 
       - name: Create info
         run: |
@@ -749,7 +849,32 @@ jobs:
           echo -e "\n $extra_content_ip" >> ${{ github.workspace }}/mediatek-filogic/info.md
           
           
+      - name: Upload automatic firmware artifact
+        if: ${{ github.event.inputs.automatic_update == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.inputs.profile }}-firmware-auto-${{ github.event.inputs.source_fingerprint }}
+          path: ${{ github.workspace }}/bin/targets/${{ env.platform }}/*
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Summarize automatic firmware artifact
+        if: ${{ github.event.inputs.automatic_update == 'true' }}
+        shell: bash
+        env:
+          ARTIFACT_NAME: ${{ github.event.inputs.profile }}-firmware-auto-${{ github.event.inputs.source_fingerprint }}
+          AUTOMATIC_SOURCE_FINGERPRINT: ${{ github.event.inputs.source_fingerprint }}
+        run: |
+          {
+            echo '## Automatic firmware artifact'
+            echo
+            echo "- Artifact: $ARTIFACT_NAME"
+            echo "- Source fingerprint: $AUTOMATIC_SOURCE_FINGERPRINT"
+            echo '- Publication: Artifact only; direct Release creation is disabled.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload firmware as workflow artifact
+        if: ${{ github.event.inputs.automatic_update != 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: ${{ github.event.inputs.profile }}-firmware-run-${{ github.run_number }}
@@ -758,6 +883,7 @@ jobs:
           retention-days: 30
 
       - name: Upload ImmortalWrt as release assets
+        if: ${{ github.event.inputs.automatic_update != 'true' }}
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.event.inputs.profile }}-run-${{ github.run_number }}

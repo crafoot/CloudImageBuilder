@@ -10,6 +10,7 @@ import pathlib
 import re
 import sys
 import tempfile
+from types import MappingProxyType
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -43,6 +44,19 @@ _PIN_REPOSITORIES = {
 _PIN_KEYS = frozenset(
     {"DAE_SOURCE_HASH"}
     | {f"{name}_{suffix}" for name in _PIN_REPOSITORIES for suffix in ("REPOSITORY", "COMMIT")}
+)
+
+# Bootstrap-only values from successful GitHub Actions run 33479866793:
+# https://github.com/crafoot/CloudImageBuilder/actions/runs/33479866793
+_RUN7_COMPATIBILITY = MappingProxyType(
+    {
+        "IMMORTAL_VERSION": "25.12.1",
+        "IMAGEBUILDER_REFERENCE": "immortalwrt/imagebuilder:mediatek-filogic-openwrt-25.12.1",
+        "SDK_ARCH_REFERENCE": "immortalwrt/sdk:aarch64_cortex-a53-openwrt-25.12.1@sha256:441f8093008b41301881af4a3ba52e470c3ae579d423445274cf7051048a8eb6",
+        "NIKKI_REF": "3799926b147d7065ac98508f16951f8714e53659",
+        "DAEDE_REF": "a6c3ced3c7e095630368de96fbf9f2ba03760672",
+        "SOURCE_FINGERPRINT": "2fbf063b910436af4c456d5c6677de05d5c480dd83db928247a997e637cd41a3",
+    }
 )
 
 
@@ -541,6 +555,11 @@ def _cli_resolve(args):
 
 def _cli_build_env(args):
     try:
+        if not os.path.lexists(args.lock):
+            if not args.compat_run7:
+                raise ValueError("candidate lock is missing")
+            print("\n".join(f"{key}={value}" for key, value in _RUN7_COMPATIBILITY.items()))
+            return 0
         lock = _read_json(args.lock)
         if lock.get("resolution") == "not-ready":
             raise ValueError("cannot build a not-ready candidate")
@@ -591,6 +610,7 @@ def main(argv=None):
     resolve.add_argument("--fixture")
     build_env = subparsers.add_parser("build-env")
     build_env.add_argument("--lock", required=True)
+    build_env.add_argument("--compat-run7", action="store_true")
     args = parser.parse_args(argv)
     if args.command == "compare":
         return _cli_compare(args)

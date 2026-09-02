@@ -122,7 +122,7 @@ class Mt3600beSourcesTests(unittest.TestCase):
         self.assertIn("changed_groups", output)
 
 
-class BuildEnvTests(unittest.TestCase):
+class BuildEnvironmentTests(unittest.TestCase):
     def _lock(self):
         return {
             "schema": 1,
@@ -135,11 +135,16 @@ class BuildEnvTests(unittest.TestCase):
             "daede": {"commit": "d" * 40},
         }
 
-    def _build_env(self, lock):
+    def _build_env(self, lock, *extra_args):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json") as output:
             json.dump(lock, output)
             output.flush()
-            return subprocess.run([sys.executable, "scripts/mt3600be_sources.py", "build-env", "--lock", output.name], cwd=ROOT, capture_output=True, text=True)
+            return subprocess.run(
+                [sys.executable, "scripts/mt3600be_sources.py", "build-env", "--lock", output.name, *extra_args],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+            )
 
     def _assert_rejected_without_environment_lines(self, result):
         self.assertEqual(result.returncode, 3)
@@ -154,6 +159,48 @@ class BuildEnvTests(unittest.TestCase):
         lock = self._lock()
         lock["immortalwrt"]["sdk"]["repository"] = "immortalwrt/sdk\nINJECTED=1"
         self._assert_rejected_without_environment_lines(self._build_env(lock))
+
+    def test_build_env_emits_every_locked_reference_and_digest(self):
+        result = self._build_env(self._lock())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        values = dict(line.split("=", 1) for line in result.stdout.splitlines())
+        self.assertEqual(values["IMMORTAL_VERSION"], "25.12.1")
+        self.assertEqual(values["IMAGEBUILDER_REFERENCE"], "immortalwrt/imagebuilder:25.12.1@sha256:" + "a" * 64)
+        self.assertEqual(values["SDK_ARCH_REFERENCE"], "immortalwrt/sdk:25.12.1@sha256:" + "b" * 64)
+        self.assertEqual(values["NIKKI_REF"], "c" * 40)
+        self.assertEqual(values["DAEDE_REF"], "d" * 40)
+
+    def test_compatibility_run7_is_used_only_when_the_lock_path_is_absent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            absent_lock = pathlib.Path(directory) / "candidate-lock.json"
+            result = subprocess.run(
+                [sys.executable, "scripts/mt3600be_sources.py", "build-env", "--lock", str(absent_lock), "--compat-run7"],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        values = dict(line.split("=", 1) for line in result.stdout.splitlines())
+        self.assertEqual(values["IMMORTAL_VERSION"], "25.12.1")
+        self.assertEqual(values["IMAGEBUILDER_REFERENCE"], "immortalwrt/imagebuilder:mediatek-filogic-openwrt-25.12.1")
+        self.assertEqual(
+            values["SDK_ARCH_REFERENCE"],
+            "immortalwrt/sdk:aarch64_cortex-a53-openwrt-25.12.1@sha256:441f8093008b41301881af4a3ba52e470c3ae579d423445274cf7051048a8eb6",
+        )
+        self.assertEqual(values["NIKKI_REF"], "3799926b147d7065ac98508f16951f8714e53659")
+        self.assertEqual(values["DAEDE_REF"], "a6c3ced3c7e095630368de96fbf9f2ba03760672")
+
+    def test_compatibility_run7_does_not_mask_a_malformed_present_lock(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json") as lock:
+            lock.write("{")
+            lock.flush()
+            result = subprocess.run(
+                [sys.executable, "scripts/mt3600be_sources.py", "build-env", "--lock", lock.name, "--compat-run7"],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+            )
+        self._assert_rejected_without_environment_lines(result)
 
 
 class ResolverTests(unittest.TestCase):

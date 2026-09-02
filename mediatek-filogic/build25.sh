@@ -4,6 +4,14 @@ set -euo pipefail
 CUSTOM_PACKAGES="${CUSTOM_PACKAGES:-}"
 source shell/apk-custom-packages.sh
 
+if [[ "${PROFILE:-}" == "glinet_gl-mt3600be" && "${MT3600BE_LOCKED_BUILD:-}" == "true" ]]; then
+  if [[ ! "${MT3600BE_SOURCE_FINGERPRINT:-}" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "MT3600BE locked build requires a valid source fingerprint"
+    exit 1
+  fi
+  echo "MT3600BE locked source fingerprint: $MT3600BE_SOURCE_FINGERPRINT"
+fi
+
 # dae/daed and Nikki are built from pinned sources in the workflow with the
 # matching ImmortalWrt 25.12.1 SDK. Only the expected APKs are accepted.
 if [[ " $CUSTOM_PACKAGES " == *" luci-app-daede "* ]] ||
