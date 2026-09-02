@@ -1,0 +1,12 @@
+{
+  "responses": [
+    {"url": "https://registry-1.docker.io/v2/immortalwrt/imagebuilder/tags/list", "json": {"tags": ["25.12.0", "25.12.1", "25.12-SNAPSHOT"]}, "headers": {}},
+    {"url": "https://registry-1.docker.io/v2/immortalwrt/sdk/tags/list", "json": {"tags": ["25.12.1"]}, "headers": {}},
+    {"url": "https://registry-1.docker.io/v2/immortalwrt/imagebuilder/manifests/25.12.1", "json": {"errors": [{"code": "UNAUTHORIZED"}]}, "headers": {"www-authenticate": "Bearer realm=\"https://auth.docker.io/token\",service=\"registry.docker.io\",scope=\"repository:immortalwrt/imagebuilder:pull\""}},
+    {"url": "https://auth.docker.io/token?service=registry.docker.io&scope=repository%3Aimmortalwrt%2Fimagebuilder%3Apull", "json": {"token": "fixture-token-not-retained"}, "headers": {}},
+    {"url": "https://registry-1.docker.io/v2/immortalwrt/imagebuilder/manifests/25.12.1", "json": {"schemaVersion": 2}, "headers": {"docker-content-digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}},
+    {"url": "https://registry-1.docker.io/v2/immortalwrt/sdk/manifests/25.12.1", "json": {"errors": [{"code": "UNAUTHORIZED"}]}, "headers": {"www-authenticate": "Bearer realm=\"https://auth.docker.io/token\",service=\"registry.docker.io\",scope=\"repository:immortalwrt/sdk:pull\""}},
+    {"url": "https://auth.docker.io/token?service=registry.docker.io&scope=repository%3Aimmortalwrt%2Fsdk%3Apull", "json": {"token": "fixture-token-not-retained"}, "headers": {}},
+    {"url": "https://registry-1.docker.io/v2/immortalwrt/sdk/manifests/25.12.1", "json": {"schemaVersion": 2}, "headers": {"docker-content-digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}
+  ]
+}

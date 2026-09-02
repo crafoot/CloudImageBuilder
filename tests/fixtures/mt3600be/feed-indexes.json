@@ -1,0 +1,7 @@
+{
+  "responses": [
+    {"url": "https://downloads.immortalwrt.org/releases/25.12.1/packages/aarch64_cortex-a53/base/Packages.adb", "bytes": "base feed\n", "headers": {}},
+    {"url": "https://downloads.immortalwrt.org/releases/25.12.1/packages/aarch64_cortex-a53/luci/Packages.adb", "bytes": "luci feed\n", "headers": {}},
+    {"url": "https://downloads.immortalwrt.org/releases/25.12.1/packages/aarch64_cortex-a53/packages/Packages.adb", "bytes": "packages feed\n", "headers": {}}
+  ]
+}

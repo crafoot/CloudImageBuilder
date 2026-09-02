@@ -1,0 +1,13 @@
+{
+  "responses": [
+    {"url": "https://api.github.com/repos/kenzok8/openwrt-daede/commits/main", "json": {"sha": "3333333333333333333333333333333333333333"}, "headers": {}},
+    {"url": "https://api.github.com/repos/kenzok8/openwrt-daede/git/trees/3333333333333333333333333333333333333333?recursive=1", "json": {"tree": [{"path": "dae/Makefile", "type": "blob", "sha": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"}, {"path": "daed/Makefile", "type": "blob", "sha": "ffffffffffffffffffffffffffffffffffffffff"}, {"path": "luci-app-daede/Makefile", "type": "blob", "sha": "9999999999999999999999999999999999999999"}, {"path": "ci/pins.env", "type": "blob", "sha": "8888888888888888888888888888888888888888"}]}, "headers": {}},
+    {"url": "https://raw.githubusercontent.com/kenzok8/openwrt-daede/3333333333333333333333333333333333333333/dae/Makefile", "bytes": "PKG_VERSION:=1.0.0\nPKG_RELEASE:=1\nPKG_SOURCE:=dae.tar.gz\nPKG_HASH:=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\n", "headers": {}},
+    {"url": "https://raw.githubusercontent.com/kenzok8/openwrt-daede/3333333333333333333333333333333333333333/daed/Makefile", "bytes": "PKG_VERSION:=1.0.0\nPKG_RELEASE:=1\nPKG_SOURCE:=daed.tar.gz\nPKG_HASH:=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\n", "headers": {}},
+    {"url": "https://raw.githubusercontent.com/kenzok8/openwrt-daede/3333333333333333333333333333333333333333/luci-app-daede/Makefile", "bytes": "PKG_VERSION:=1.0.0\nPKG_RELEASE:=1\nPKG_SOURCE:=luci-app-daede.tar.gz\nPKG_HASH:=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\n", "headers": {}},
+    {"url": "https://raw.githubusercontent.com/kenzok8/openwrt-daede/3333333333333333333333333333333333333333/ci/pins.env", "bytes": "DAE_REPOSITORY=daeuniverse/dae\nDAE_COMMIT=4444444444444444444444444444444444444444\nDAED_REPOSITORY=daeuniverse/daed\nDAED_COMMIT=5555555555555555555555555555555555555555\nDAE_WING_REPOSITORY=daeuniverse/dae-wing\nDAE_WING_COMMIT=6666666666666666666666666666666666666666\nDAE_SOURCE_HASH=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n", "headers": {}},
+    {"url": "https://api.github.com/repos/daeuniverse/dae/commits/main", "json": {"sha": "4444444444444444444444444444444444444444"}, "headers": {}},
+    {"url": "https://api.github.com/repos/daeuniverse/daed/commits/main", "json": {"sha": "5555555555555555555555555555555555555555"}, "headers": {}},
+    {"url": "https://api.github.com/repos/daeuniverse/dae-wing/commits/main", "json": {"sha": "6666666666666666666666666666666666666666"}, "headers": {}}
+  ]
+}
