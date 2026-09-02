@@ -1,0 +1,642 @@
+name: Check MT3600BE upstream updates
+
+on:
+  schedule:
+    - cron: '20 19 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: mt3600be-automatic-upstream-build
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  stage-build-promote:
+    name: Stage, verify, and publish MT3600BE update
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    permissions:
+      actions: write
+      contents: write
+
+    steps:
+      - name: Checkout dev with full history
+        uses: actions/checkout@v6
+        with:
+          ref: dev
+          fetch-depth: 0
+
+      - name: Require the dev branch and capture its initial remote SHA
+        id: baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" != 'refs/heads/dev' ]]; then
+            echo "This updater is restricted to refs/heads/dev; received $GITHUB_REF" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          git fetch --no-tags origin refs/heads/dev:refs/remotes/origin/dev
+          initial_dev_sha="$(git rev-parse refs/remotes/origin/dev)"
+          checkout_sha="$(git rev-parse HEAD)"
+          if [[ ! "$initial_dev_sha" =~ ^[0-9a-f]{40}$ || "$checkout_sha" != "$initial_dev_sha" || "$GITHUB_SHA" != "$initial_dev_sha" ]]; then
+            {
+              echo '## MT3600BE updater stopped'
+              echo
+              echo "- Event SHA: $GITHUB_SHA"
+              echo "- Checkout SHA: $checkout_sha"
+              echo "- Initial remote dev SHA: $initial_dev_sha"
+              echo '- Reason: the updater was not started from the exact current dev head.'
+            } | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "initial_dev_sha=$initial_dev_sha" >> "$GITHUB_OUTPUT"
+          echo "INITIAL_DEV_SHA=$initial_dev_sha" >> "$GITHUB_ENV"
+
+      - name: Reconcile the current successful lock release
+        id: reconcile
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          lock_path="$GITHUB_WORKSPACE/config/mt3600be-sources.lock.json"
+          if [[ ! -e "$lock_path" ]]; then
+            echo 'state=bootstrap-no-lock' >> "$GITHUB_OUTPUT"
+            echo 'stop=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ ! -f "$lock_path" ]]; then
+            echo 'The MT3600BE successful lock path is not a regular file' | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          lock_env="$RUNNER_TEMP/current-lock.env"
+          python3 scripts/mt3600be_sources.py build-env --lock "$lock_path" > "$lock_env"
+          current_fingerprint="$(sed -n 's/^SOURCE_FINGERPRINT=//p' "$lock_env")"
+          if [[ ! "$current_fingerprint" =~ ^[0-9a-f]{64}$ ]]; then
+            echo 'Current successful lock did not produce a canonical fingerprint' | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          releases_path="$RUNNER_TEMP/current-lock-releases.json"
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" > "$releases_path"
+          marker="MT3600BE source fingerprint: \`$current_fingerprint\`"
+          matches="$(jq --arg marker "$marker" '[.[][] | select((.body // "") | contains($marker))]' "$releases_path")"
+          match_count="$(jq 'length' <<< "$matches")"
+          if [[ "$match_count" -gt 1 ]]; then
+            echo "Multiple releases claim current fingerprint $current_fingerprint" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          if [[ "$match_count" -eq 0 ]]; then
+            echo "Current successful lock $current_fingerprint has no matching release" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          missing=()
+          for suffix in '.bin' '.manifest' '.bom.cdx.json' 'profiles.json' 'sha256sums'; do
+            if ! jq -e --arg suffix "$suffix" '.[0].assets | any(.[]; .name | endswith($suffix))' <<< "$matches" > /dev/null; then
+              missing+=("$suffix")
+            fi
+          done
+          release_tag="$(jq -r '.[0].tag_name' <<< "$matches")"
+          if ((${#missing[@]})); then
+            printf 'Release %s is incomplete; missing assets: %s\n' "$release_tag" "${missing[*]}" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          is_draft="$(jq -r '.[0].draft' <<< "$matches")"
+          if [[ "$is_draft" == 'false' ]]; then
+            {
+              echo '## Current MT3600BE release reconciled'
+              echo
+              echo "- Fingerprint: $current_fingerprint"
+              echo "- Published complete release: $release_tag"
+              echo '- Action: continue to normal candidate resolution.'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo 'state=published-complete' >> "$GITHUB_OUTPUT"
+            echo 'stop=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "$is_draft" != 'true' ]]; then
+            echo "Release $release_tag has an invalid draft state" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          target_sha="$(jq -r '.[0].target_commitish' <<< "$matches")"
+          if [[ "$target_sha" != "$INITIAL_DEV_SHA" ]]; then
+            echo "Complete draft $release_tag targets $target_sha, not current dev $INITIAL_DEV_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          current_dev_sha="$(git ls-remote --heads origin refs/heads/dev | awk '{print $1}')"
+          if [[ "$current_dev_sha" != "$INITIAL_DEV_SHA" ]]; then
+            echo "Recovery blocked by concurrent dev movement: expected $INITIAL_DEV_SHA, received ${current_dev_sha:-missing}" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          gh release edit "$release_tag" --draft=false --latest=false
+          reconciled="$(gh release view "$release_tag" --json isDraft,targetCommitish,assets,body)"
+          confirmed_dev_sha="$(git ls-remote --heads origin refs/heads/dev | awk '{print $1}')"
+          if [[ "$(jq -r '.isDraft' <<< "$reconciled")" != 'false' || "$(jq -r '.targetCommitish' <<< "$reconciled")" != "$INITIAL_DEV_SHA" || "$confirmed_dev_sha" != "$INITIAL_DEV_SHA" ]]; then
+            echo "Draft $release_tag did not publish against exact dev SHA $INITIAL_DEV_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          {
+            echo '## Recovered MT3600BE publication'
+            echo
+            echo "- Fingerprint: $current_fingerprint"
+            echo "- Published recovered draft: $release_tag"
+            echo "- Confirmed dev SHA: $INITIAL_DEV_SHA"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo 'state=recovered-published-draft' >> "$GITHUB_OUTPUT"
+          echo 'stop=true' >> "$GITHUB_OUTPUT"
+
+      - name: Resolve and summarize the candidate
+        id: resolve
+        if: steps.reconcile.outputs.stop != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          lock_path="$GITHUB_WORKSPACE/config/mt3600be-sources.lock.json"
+          candidate_path="$RUNNER_TEMP/mt3600be-candidate-lock.json"
+          previous="$lock_path"
+          if [[ ! -e "$lock_path" ]]; then
+            previous='-'
+          elif [[ ! -f "$lock_path" ]]; then
+            echo 'The MT3600BE successful lock path is not a regular file' | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          set +e
+          resolution="$(python3 scripts/mt3600be_sources.py resolve --previous "$previous" --output "$candidate_path" 2>&1)"
+          resolver_status=$?
+          set -e
+          if ! jq -e . > /dev/null 2>&1 <<< "$resolution"; then
+            echo "Resolver returned non-JSON output: $resolution" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          decision="$(jq -r '.decision' <<< "$resolution")"
+          candidate_fingerprint="$(jq -r '.fingerprint // ""' <<< "$resolution")"
+          changed_groups="$(jq -c '.changed_groups' <<< "$resolution")"
+          resolver_error="$(jq -r '.error // ""' <<< "$resolution")"
+
+          {
+            echo '## MT3600BE upstream resolution'
+            echo
+            echo "- Initial remote dev SHA: $INITIAL_DEV_SHA"
+            echo "- Decision: $decision"
+            echo "- Candidate fingerprint: ${candidate_fingerprint:-unavailable}"
+            echo "- Changed or mismatched inputs: $changed_groups"
+            if [[ -n "$resolver_error" ]]; then
+              echo "- Resolver error: $resolver_error"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          case "$decision" in
+            changed)
+              if [[ "$resolver_status" -ne 0 || ! "$candidate_fingerprint" =~ ^[0-9a-f]{64}$ || ! -f "$candidate_path" ]]; then
+                echo 'Changed candidate did not satisfy its status, fingerprint, and lock contract' | tee -a "$GITHUB_STEP_SUMMARY"
+                exit 1
+              fi
+              ;;
+            unchanged)
+              if [[ "$resolver_status" -ne 0 || ! "$candidate_fingerprint" =~ ^[0-9a-f]{64}$ ]]; then
+                echo 'Unchanged candidate did not satisfy its status and fingerprint contract' | tee -a "$GITHUB_STEP_SUMMARY"
+                exit 1
+              fi
+              ;;
+            not-ready|invalid)
+              echo "Resolver failed closed with $decision: ${resolver_error:-$changed_groups}" | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 1
+              ;;
+            *)
+              echo "Resolver returned unsupported decision $decision" | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 1
+              ;;
+          esac
+
+          echo "decision=$decision" >> "$GITHUB_OUTPUT"
+          echo "fingerprint=$candidate_fingerprint" >> "$GITHUB_OUTPUT"
+          echo "changed_groups=$changed_groups" >> "$GITHUB_OUTPUT"
+          echo "candidate_path=$candidate_path" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push the candidate staging branch
+        id: stage
+        if: steps.resolve.outputs.decision == 'changed'
+        shell: bash
+        env:
+          CANDIDATE_PATH: ${{ steps.resolve.outputs.candidate_path }}
+          SOURCE_FINGERPRINT: ${{ steps.resolve.outputs.fingerprint }}
+          CHANGED_GROUPS: ${{ steps.resolve.outputs.changed_groups }}
+        run: |
+          set -euo pipefail
+          version="$(jq -r '.immortalwrt.version' "$CANDIDATE_PATH")"
+          release_date="$(TZ=Asia/Singapore date +%F)"
+          identity_path="$RUNNER_TEMP/automatic-identity.env"
+          python3 - "$version" "$release_date" "$SOURCE_FINGERPRINT" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" > "$identity_path" <<'PY'
+          import sys
+          from scripts.mt3600be_sources import automatic_tag, staging_branch
+
+          version, release_date, source_fingerprint, run_id, attempt = sys.argv[1:]
+          print(f"release_tag={automatic_tag(version, release_date, source_fingerprint)}")
+          print(f"staging_branch={staging_branch(int(run_id), int(attempt))}")
+          PY
+          release_tag="$(sed -n 's/^release_tag=//p' "$identity_path")"
+          staging_branch="$(sed -n 's/^staging_branch=//p' "$identity_path")"
+          expected_branch="auto-update-staging-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          if [[ "$staging_branch" != "$expected_branch" || ! "$staging_branch" =~ ^auto-update-staging-[1-9][0-9]*-[1-9][0-9]*$ ]]; then
+            echo "Refusing unsafe staging branch $staging_branch" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "staging_branch=$staging_branch" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+
+          if git ls-remote --exit-code --heads origin "refs/heads/$staging_branch" > /dev/null 2>&1; then
+            echo "Current-run staging branch already exists: $staging_branch" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          git switch --create "$staging_branch" "$INITIAL_DEV_SHA"
+          install -m 0644 "$CANDIDATE_PATH" config/mt3600be-sources.lock.json
+          git add -- config/mt3600be-sources.lock.json
+          if [[ "$(git diff --cached --name-only)" != 'config/mt3600be-sources.lock.json' ]]; then
+            echo 'Candidate commit contains paths outside the MT3600BE lock' | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m "Stage MT3600BE source update: $CHANGED_GROUPS"
+          staging_sha="$(git rev-parse HEAD)"
+          if [[ ! "$staging_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo 'Staging commit did not resolve to a full SHA' | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "staging_sha=$staging_sha" >> "$GITHUB_OUTPUT"
+          git push origin "$staging_sha:refs/heads/$staging_branch"
+          remote_staging_sha="$(git ls-remote --heads origin "refs/heads/$staging_branch" | awk '{print $1}')"
+          if [[ "$remote_staging_sha" != "$staging_sha" ]]; then
+            echo "Staging SHA mismatch: expected $staging_sha, received ${remote_staging_sha:-missing}" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          {
+            echo '## MT3600BE candidate staged'
+            echo
+            echo "- Branch: $staging_branch"
+            echo "- Exact staging SHA: $staging_sha"
+            echo "- Release identity: $release_tag"
+            echo "- Changed inputs: $CHANGED_GROUPS"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Dispatch the exact staging build
+        if: steps.resolve.outputs.decision == 'changed'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STAGING_BRANCH: ${{ steps.stage.outputs.staging_branch }}
+          STAGING_SHA: ${{ steps.stage.outputs.staging_sha }}
+          SOURCE_FINGERPRINT: ${{ steps.resolve.outputs.fingerprint }}
+        run: |
+          set -euo pipefail
+          remote_staging_sha="$(git ls-remote --heads origin "refs/heads/$STAGING_BRANCH" | awk '{print $1}')"
+          if [[ "$remote_staging_sha" != "$STAGING_SHA" ]]; then
+            echo "Will not dispatch: staging branch is ${remote_staging_sha:-missing}, expected $STAGING_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          gh workflow run build-wireless-router25.12.yml \
+            --ref "$STAGING_BRANCH" \
+            -f profile=glinet_gl-mt3600be \
+            -f automatic_update=true \
+            -f source_fingerprint="$SOURCE_FINGERPRINT"
+
+      - name: Locate and watch the exact child run
+        id: child
+        if: steps.resolve.outputs.decision == 'changed'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHILD_WORKFLOW: build-wireless-router25.12.yml
+          STAGING_BRANCH: ${{ steps.stage.outputs.staging_branch }}
+          STAGING_SHA: ${{ steps.stage.outputs.staging_sha }}
+        run: |
+          set -euo pipefail
+          child_run_id=''
+          for poll in {1..30}; do
+            runs="$(gh run list \
+              --workflow "$CHILD_WORKFLOW" \
+              --branch "$STAGING_BRANCH" \
+              --commit "$STAGING_SHA" \
+              --event workflow_dispatch \
+              --limit 10 \
+              --json databaseId,headSha,headBranch,event,workflowName)"
+            matches="$(jq --arg branch "$STAGING_BRANCH" --arg sha "$STAGING_SHA" \
+              '[.[] | select(.headBranch == $branch and .headSha == $sha and .event == "workflow_dispatch")]' <<< "$runs")"
+            match_count="$(jq 'length' <<< "$matches")"
+            if [[ "$match_count" -gt 1 ]]; then
+              echo "Multiple child runs match workflow, branch, event, and SHA $STAGING_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+            if [[ "$match_count" -eq 1 ]]; then
+              child_run_id="$(jq -r '.[0].databaseId' <<< "$matches")"
+              break
+            fi
+            sleep 10
+          done
+          if [[ ! "$child_run_id" =~ ^[1-9][0-9]*$ ]]; then
+            echo "No child run matched workflow $CHILD_WORKFLOW, branch $STAGING_BRANCH, event workflow_dispatch, and SHA $STAGING_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          gh run watch "$child_run_id" --exit-status
+          child="$(gh run view "$child_run_id" --json conclusion,event,headBranch,headSha,status,workflowName)"
+          if ! jq -e \
+            --arg branch "$STAGING_BRANCH" \
+            --arg sha "$STAGING_SHA" \
+            '.status == "completed" and .conclusion == "success" and .event == "workflow_dispatch" and .headBranch == $branch and .headSha == $sha' \
+            <<< "$child" > /dev/null; then
+            echo "Child run $child_run_id failed its exact identity or success check: $child" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "child_run_id=$child_run_id" >> "$GITHUB_OUTPUT"
+          {
+            echo '## Exact child build verified'
+            echo
+            echo "- Workflow: $CHILD_WORKFLOW"
+            echo "- Run ID: $child_run_id"
+            echo "- Branch: $STAGING_BRANCH"
+            echo "- headSha: $STAGING_SHA"
+            echo '- Event: workflow_dispatch'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Download and verify the firmware artifact
+        id: artifact
+        if: steps.resolve.outputs.decision == 'changed'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHILD_RUN_ID: ${{ steps.child.outputs.child_run_id }}
+          SOURCE_FINGERPRINT: ${{ steps.resolve.outputs.fingerprint }}
+        run: |
+          set -euo pipefail
+          artifact_name="glinet_gl-mt3600be-firmware-auto-$SOURCE_FINGERPRINT"
+          artifact_dir="$RUNNER_TEMP/mt3600be-firmware-artifact"
+          mkdir -p "$artifact_dir"
+          gh run download "$CHILD_RUN_ID" --name "$artifact_name" --dir "$artifact_dir"
+
+          missing=()
+          for suffix in '.bin' '.manifest' '.bom.cdx.json' 'profiles.json' 'sha256sums'; do
+            if ! find "$artifact_dir" -type f -name "*$suffix" -print -quit | grep -q .; then
+              missing+=("$suffix")
+            fi
+          done
+          if ((${#missing[@]})); then
+            printf 'Downloaded Artifact is incomplete; missing assets: %s\n' "${missing[*]}" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          mapfile -t sysupgrade_images < <(find "$artifact_dir" -type f -name '*glinet_gl-mt3600be*sysupgrade.bin' -print)
+          mapfile -t manifests < <(find "$artifact_dir" -type f -name '*glinet_gl-mt3600be*.manifest' -print)
+          mapfile -t checksums < <(find "$artifact_dir" -type f -name '*sha256sums' -print)
+          mapfile -t profiles < <(find "$artifact_dir" -type f -name '*profiles.json' -print)
+          mapfile -t sboms < <(find "$artifact_dir" -type f -name '*.bom.cdx.json' -print)
+          if [[ "${#sysupgrade_images[@]}" -lt 1 || "${#manifests[@]}" -ne 1 || "${#checksums[@]}" -ne 1 || "${#profiles[@]}" -ne 1 || "${#sboms[@]}" -lt 1 ]]; then
+            echo "Artifact cardinality failed: sysupgrade=${#sysupgrade_images[@]} manifest=${#manifests[@]} sha256sums=${#checksums[@]} profiles=${#profiles[@]} sbom=${#sboms[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          python3 scripts/validate_mt3600be_manifest.py "${manifests[0]}"
+          jq -e . "${profiles[0]}" > /dev/null
+          for sbom in "${sboms[@]}"; do
+            jq -e . "$sbom" > /dev/null
+          done
+          checksum_dir="$(dirname "${checksums[0]}")"
+          checksum_name="$(basename "${checksums[0]}")"
+          (cd "$checksum_dir" && sha256sum --check "$checksum_name")
+
+          mapfile -d '' asset_files < <(find "$artifact_dir" -type f -print0 | sort -z)
+          if [[ "${#asset_files[@]}" -lt 5 ]]; then
+            echo 'Verified Artifact contains fewer than five files' | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          duplicate_names="$(printf '%s\0' "${asset_files[@]}" | xargs -0 -n1 basename | sort | uniq -d)"
+          if [[ -n "$duplicate_names" ]]; then
+            echo "Artifact has duplicate asset basenames: $duplicate_names" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "artifact_dir=$artifact_dir" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=$artifact_name" >> "$GITHUB_OUTPUT"
+
+      - name: Create or reconcile the complete draft release
+        id: draft
+        if: steps.resolve.outputs.decision == 'changed'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_DIR: ${{ steps.artifact.outputs.artifact_dir }}
+          CANDIDATE_PATH: ${{ steps.resolve.outputs.candidate_path }}
+          SOURCE_FINGERPRINT: ${{ steps.resolve.outputs.fingerprint }}
+          CHANGED_GROUPS: ${{ steps.resolve.outputs.changed_groups }}
+          PROPOSED_TAG: ${{ steps.stage.outputs.release_tag }}
+          STAGING_SHA: ${{ steps.stage.outputs.staging_sha }}
+        run: |
+          set -euo pipefail
+          marker="MT3600BE source fingerprint: \`$SOURCE_FINGERPRINT\`"
+          version="$(jq -r '.immortalwrt.version' "$CANDIDATE_PATH")"
+          imagebuilder="$(jq -r '.immortalwrt.imagebuilder | "\(.repository):\(.tag)@\(.digest)"' "$CANDIDATE_PATH")"
+          sdk="$(jq -r '.immortalwrt.sdk | "\(.repository):\(.tag)@\(.digest)"' "$CANDIDATE_PATH")"
+          nikki="$(jq -r '.nikki.commit' "$CANDIDATE_PATH")"
+          daede="$(jq -r '.daede.commit' "$CANDIDATE_PATH")"
+          notes_path="$RUNNER_TEMP/mt3600be-release-notes.md"
+          {
+            echo 'Automated GL-MT3600BE firmware built from a fully resolved source lock.'
+            echo
+            echo "$marker"
+            echo
+            echo "- ImmortalWrt: \`$version\`"
+            echo "- ImageBuilder: \`$imagebuilder\`"
+            echo "- SDK: \`$sdk\`"
+            echo "- Nikki commit: \`$nikki\`"
+            echo "- daede commit: \`$daede\`"
+            echo "- Changed input groups: \`$CHANGED_GROUPS\`"
+            echo "- Tested staging commit: \`$STAGING_SHA\`"
+            echo
+            echo 'Install manually after reviewing the manifest and checksums. This automation does not flash a router.'
+          } > "$notes_path"
+
+          mapfile -d '' asset_files < <(find "$ARTIFACT_DIR" -type f -print0 | sort -z)
+          releases_path="$RUNNER_TEMP/candidate-releases.json"
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" > "$releases_path"
+          matches="$(jq --arg marker "$marker" '[.[][] | select((.body // "") | contains($marker))]' "$releases_path")"
+          match_count="$(jq 'length' <<< "$matches")"
+          if [[ "$match_count" -gt 1 ]]; then
+            echo "Multiple releases claim candidate fingerprint $SOURCE_FINGERPRINT" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          release_tag="$PROPOSED_TAG"
+          if [[ "$match_count" -eq 1 ]]; then
+            release_tag="$(jq -r '.[0].tag_name' <<< "$matches")"
+            missing=()
+            for suffix in '.bin' '.manifest' '.bom.cdx.json' 'profiles.json' 'sha256sums'; do
+              if ! jq -e --arg suffix "$suffix" '.[0].assets | any(.[]; .name | endswith($suffix))' <<< "$matches" > /dev/null; then
+                missing+=("$suffix")
+              fi
+            done
+            if ((${#missing[@]})); then
+              printf 'Existing release %s is incomplete; missing assets: %s\n' "$release_tag" "${missing[*]}" | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+            if [[ "$(jq -r '.[0].draft' <<< "$matches")" != 'true' ]]; then
+              echo "Published candidate release $release_tag exists before exact dev promotion" | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+            gh release edit "$release_tag" \
+              --draft \
+              --latest=false \
+              --target "$STAGING_SHA" \
+              --title "GL-MT3600BE $version automatic build" \
+              --notes-file "$notes_path"
+          else
+            if gh release view "$PROPOSED_TAG" > /dev/null 2>&1 || git ls-remote --exit-code --tags origin "refs/tags/$PROPOSED_TAG" > /dev/null 2>&1; then
+              echo "Release tag $PROPOSED_TAG exists without the matching full fingerprint" | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+            gh release create "$PROPOSED_TAG" "${asset_files[@]}" \
+              --draft \
+              --latest=false \
+              --target "$STAGING_SHA" \
+              --title "GL-MT3600BE $version automatic build" \
+              --notes-file "$notes_path"
+            release_tag="$PROPOSED_TAG"
+          fi
+
+          release="$(gh release view "$release_tag" --json assets,body,isDraft,tagName,targetCommitish)"
+          if [[ "$(jq -r '.targetCommitish' <<< "$release")" != "$STAGING_SHA" ]] || ! jq -e --arg marker "$marker" '(.body // "") | contains($marker)' <<< "$release" > /dev/null; then
+            echo "Release $release_tag does not match fingerprint and exact tested SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          missing=()
+          for suffix in '.bin' '.manifest' '.bom.cdx.json' 'profiles.json' 'sha256sums'; do
+            if ! jq -e --arg suffix "$suffix" '.assets | any(.[]; .name | endswith($suffix))' <<< "$release" > /dev/null; then
+              missing+=("$suffix")
+            fi
+          done
+          if ((${#missing[@]})); then
+            printf 'Release %s failed complete-draft verification; missing assets: %s\n' "$release_tag" "${missing[*]}" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          if [[ "$(jq -r '.isDraft' <<< "$release")" != 'true' && "$(jq -r '.isDraft' <<< "$release")" != 'false' ]]; then
+            echo "Release $release_tag has an invalid draft state" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+
+      - name: Promote the exact tested commit to dev
+        id: promote
+        if: steps.resolve.outputs.decision == 'changed'
+        shell: bash
+        env:
+          STAGING_SHA: ${{ steps.stage.outputs.staging_sha }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$STAGING_SHA" =~ ^[0-9a-f]{40}$ || ! "$INITIAL_DEV_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo 'Promotion requires full initial and tested SHAs' | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$INITIAL_DEV_SHA" "$STAGING_SHA"; then
+            echo "Tested SHA $STAGING_SHA is not a fast-forward descendant of initial dev $INITIAL_DEV_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          current_dev_sha="$(git ls-remote --heads origin refs/heads/dev | awk '{print $1}')"
+          if [[ "$current_dev_sha" != "$INITIAL_DEV_SHA" ]]; then
+            echo "Concurrent dev movement: expected $INITIAL_DEV_SHA, received ${current_dev_sha:-missing}" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          git push \
+            --force-with-lease="refs/heads/dev:$INITIAL_DEV_SHA" \
+            origin \
+            "$STAGING_SHA:refs/heads/dev"
+          actual_dev_sha="$(git ls-remote --heads origin refs/heads/dev | awk '{print $1}')"
+          if [[ "$actual_dev_sha" != "$STAGING_SHA" ]]; then
+            echo "Remote dev confirmation failed: expected $STAGING_SHA, received ${actual_dev_sha:-missing}" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "promoted_sha=$actual_dev_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Publish the complete matching draft release
+        if: steps.resolve.outputs.decision == 'changed'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.draft.outputs.release_tag }}
+          SOURCE_FINGERPRINT: ${{ steps.resolve.outputs.fingerprint }}
+          STAGING_SHA: ${{ steps.stage.outputs.staging_sha }}
+        run: |
+          set -euo pipefail
+          confirmed_dev_sha="$(git ls-remote --heads origin refs/heads/dev | awk '{print $1}')"
+          if [[ "$confirmed_dev_sha" != "$STAGING_SHA" ]]; then
+            echo "Publication blocked: remote dev is ${confirmed_dev_sha:-missing}, expected $STAGING_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          release="$(gh release view "$RELEASE_TAG" --json assets,body,isDraft,targetCommitish)"
+          marker="MT3600BE source fingerprint: \`$SOURCE_FINGERPRINT\`"
+          if [[ "$(jq -r '.targetCommitish' <<< "$release")" != "$STAGING_SHA" ]] || ! jq -e --arg marker "$marker" '(.body // "") | contains($marker)' <<< "$release" > /dev/null; then
+            echo "Publication blocked: release $RELEASE_TAG does not match the fingerprint and exact promoted SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          missing=()
+          for suffix in '.bin' '.manifest' '.bom.cdx.json' 'profiles.json' 'sha256sums'; do
+            if ! jq -e --arg suffix "$suffix" '.assets | any(.[]; .name | endswith($suffix))' <<< "$release" > /dev/null; then
+              missing+=("$suffix")
+            fi
+          done
+          if ((${#missing[@]})); then
+            printf 'Publication blocked for %s; missing assets: %s\n' "$RELEASE_TAG" "${missing[*]}" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          if [[ "$(jq -r '.isDraft' <<< "$release")" == 'true' ]]; then
+            gh release edit "$RELEASE_TAG" --draft=false --latest=false
+          elif [[ "$(jq -r '.isDraft' <<< "$release")" != 'false' ]]; then
+            echo "Publication blocked: release $RELEASE_TAG has an invalid draft state" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          published="$(gh release view "$RELEASE_TAG" --json assets,body,isDraft,targetCommitish,url)"
+          if [[ "$(jq -r '.isDraft' <<< "$published")" != 'false' || "$(jq -r '.targetCommitish' <<< "$published")" != "$STAGING_SHA" ]]; then
+            echo "Release $RELEASE_TAG was not confirmed published against $STAGING_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          {
+            echo '## MT3600BE automatic update published'
+            echo
+            echo "- Remote dev SHA: $confirmed_dev_sha"
+            echo "- Source fingerprint: $SOURCE_FINGERPRINT"
+            echo "- Release: $(jq -r '.url' <<< "$published")"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Clean the exact current-run staging branch
+        if: ${{ always() && steps.stage.outputs.staging_branch != '' }}
+        shell: bash
+        env:
+          STAGING_BRANCH: ${{ steps.stage.outputs.staging_branch }}
+          STAGING_SHA: ${{ steps.stage.outputs.staging_sha }}
+        run: |
+          set -euo pipefail
+          expected_branch="auto-update-staging-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          if [[ "$STAGING_BRANCH" != "$expected_branch" || ! "$STAGING_BRANCH" =~ ^auto-update-staging-[1-9][0-9]*-[1-9][0-9]*$ ]]; then
+            echo "Cleanup refused unsafe branch identity $STAGING_BRANCH" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          remote_staging_sha="$(git ls-remote --heads origin "refs/heads/$STAGING_BRANCH" | awk '{print $1}')"
+          if [[ -z "$remote_staging_sha" ]]; then
+            echo "Staging branch $STAGING_BRANCH was already absent" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [[ -z "$STAGING_SHA" || "$remote_staging_sha" != "$STAGING_SHA" ]]; then
+            echo "Cleanup refused changed branch $STAGING_BRANCH at $remote_staging_sha; expected $STAGING_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          git push origin ":refs/heads/$STAGING_BRANCH"
+          if git ls-remote --exit-code --heads origin "refs/heads/$STAGING_BRANCH" > /dev/null 2>&1; then
+            echo "Cleanup could not delete exact staging branch $STAGING_BRANCH" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "Deleted exact current-run staging branch: $STAGING_BRANCH" >> "$GITHUB_STEP_SUMMARY"

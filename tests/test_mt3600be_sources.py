@@ -1,5 +1,6 @@
 import json
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -8,11 +9,14 @@ import unittest
 from scripts.mt3600be_sources import (
     FixtureTransport,
     Transport,
+    automatic_tag,
     canonical_bytes,
     compare_states,
     fingerprint,
     resolve_candidate,
     select_stable_25_12,
+    staging_branch,
+    validate_staging_branch,
     validate_digest,
     validate_sha,
 )
@@ -24,6 +28,50 @@ FIXTURES = ROOT / "tests" / "fixtures" / "mt3600be"
 
 def load_fixture(name):
     return json.loads((FIXTURES / name).read_text())
+
+
+class ReleaseIdentityTests(unittest.TestCase):
+    def test_builds_automatic_release_tag_from_strict_inputs(self):
+        self.assertEqual(
+            automatic_tag("25.12.1", "2026-09-02", "a" * 64),
+            "glinet_gl-mt3600be-25.12.1-auto-20260902-aaaaaaaaaaaa",
+        )
+
+    def test_rejects_invalid_release_versions(self):
+        for version in ("25.12", "25.13.1", "25.12.1-rc1", 251201):
+            with self.subTest(version=version), self.assertRaisesRegex(ValueError, "25.12.x"):
+                automatic_tag(version, "2026-09-02", "a" * 64)
+
+    def test_rejects_invalid_or_impossible_release_dates(self):
+        for release_date in ("20260902", "2026-9-02", "2026-02-30", 20260902):
+            with self.subTest(release_date=release_date), self.assertRaisesRegex(ValueError, "YYYY-MM-DD"):
+                automatic_tag("25.12.1", release_date, "a" * 64)
+
+    def test_rejects_noncanonical_release_fingerprints(self):
+        for source_fingerprint in ("a" * 63, "A" * 64, "g" * 64, None):
+            with self.subTest(source_fingerprint=source_fingerprint), self.assertRaisesRegex(ValueError, "lowercase SHA-256"):
+                automatic_tag("25.12.1", "2026-09-02", source_fingerprint)
+
+    def test_builds_staging_branch_from_positive_integer_run_identity(self):
+        self.assertEqual(staging_branch(run_id=123, attempt=2), "auto-update-staging-123-2")
+
+    def test_rejects_invalid_run_identity(self):
+        for run_id, attempt in ((0, 1), (1, 0), (-1, 1), (1, -1), ("123", 2), (123, "2"), (True, 1)):
+            with self.subTest(run_id=run_id, attempt=attempt), self.assertRaisesRegex(ValueError, "positive integer"):
+                staging_branch(run_id=run_id, attempt=attempt)
+
+    def test_validates_only_strict_automation_staging_branch_names(self):
+        self.assertEqual(validate_staging_branch("auto-update-staging-123-2"), "auto-update-staging-123-2")
+        for branch in (
+            "auto-update-staging-123",
+            "auto-update-staging-123-0",
+            "auto-update-staging-0123-2",
+            "auto-update-staging-123-2/extra",
+            "refs/heads/auto-update-staging-123-2",
+            123,
+        ):
+            with self.subTest(branch=branch), self.assertRaisesRegex(ValueError, "staging branch"):
+                validate_staging_branch(branch)
 
 
 class Mt3600beSourcesTests(unittest.TestCase):
@@ -239,6 +287,104 @@ class WorkflowContractTests(unittest.TestCase):
     def test_sdk_action_receives_locked_tag_and_digest_suffix_unchanged(self):
         self.assertIn('sdk_action_arch="${sdk_reference#immortalwrt/sdk:}"', self.workflow)
         self.assertNotIn('sdk_action_arch="aarch64_cortex-a53-openwrt-${sdk_version}@${sdk_digest}"', self.workflow)
+
+
+class OrchestratorWorkflowContractTests(unittest.TestCase):
+    WORKFLOW = ROOT / ".github" / "workflows" / "check-mt3600be-updates.yml"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.workflow = cls.WORKFLOW.read_text(encoding="utf-8")
+        cls.step_names = re.findall(r"^      - name: (.+)$", cls.workflow, re.MULTILINE)
+
+    def _step(self, name):
+        marker = f"      - name: {name}\n"
+        start = self.workflow.index(marker)
+        next_step = self.workflow.find("\n      - name: ", start + len(marker))
+        return self.workflow[start:] if next_step == -1 else self.workflow[start:next_step]
+
+    def test_has_daily_manual_trigger_and_non_cancelling_concurrency(self):
+        self.assertRegex(self.workflow, r"(?m)^on:\n  schedule:\n    - cron: '20 19 \* \* \*'\n  workflow_dispatch:\s*$")
+        self.assertRegex(
+            self.workflow,
+            r"(?m)^concurrency:\n  group: mt3600be-automatic-upstream-build\n  cancel-in-progress: false$",
+        )
+
+    def test_orchestration_steps_preserve_required_order(self):
+        required = [
+            "Require the dev branch and capture its initial remote SHA",
+            "Reconcile the current successful lock release",
+            "Resolve and summarize the candidate",
+            "Create and push the candidate staging branch",
+            "Dispatch the exact staging build",
+            "Locate and watch the exact child run",
+            "Download and verify the firmware artifact",
+            "Create or reconcile the complete draft release",
+            "Promote the exact tested commit to dev",
+            "Publish the complete matching draft release",
+            "Clean the exact current-run staging branch",
+        ]
+        positions = [self.step_names.index(name) for name in required]
+        self.assertEqual(positions, sorted(positions))
+
+    def test_only_changed_can_enter_staging_and_fail_closed_outcomes_are_named(self):
+        resolve = self._step("Resolve and summarize the candidate")
+        stage = self._step("Create and push the candidate staging branch")
+        self.assertIn("not-ready", resolve)
+        self.assertIn("invalid", resolve)
+        self.assertIn("exit 1", resolve)
+        self.assertIn("steps.resolve.outputs.decision == 'changed'", stage)
+
+    def test_existing_lock_without_matching_release_fails_closed(self):
+        reconcile = self._step("Reconcile the current successful lock release")
+        self.assertIn("has no matching release", reconcile)
+        no_match = reconcile.split('if [[ "$match_count" -eq 0 ]]', 1)[1].split("\n          fi\n", 1)[0]
+        self.assertIn("exit 1", no_match)
+        self.assertNotIn("stop=false", no_match)
+
+    def test_child_run_identity_binds_workflow_branch_event_and_exact_sha(self):
+        dispatch = self._step("Dispatch the exact staging build")
+        locate = self._step("Locate and watch the exact child run")
+        self.assertIn("build-wireless-router25.12.yml", dispatch)
+        self.assertIn("profile=glinet_gl-mt3600be", dispatch)
+        self.assertIn("automatic_update=true", dispatch)
+        self.assertIn("source_fingerprint=", dispatch)
+        self.assertIn('--workflow "$CHILD_WORKFLOW"', locate)
+        self.assertIn('--branch "$STAGING_BRANCH"', locate)
+        self.assertIn("--event workflow_dispatch", locate)
+        self.assertIn("--commit \"$STAGING_SHA\"", locate)
+        self.assertIn("gh run watch", locate)
+        self.assertIn(".headSha == $sha", locate)
+
+    def test_artifact_and_release_gates_cover_every_required_asset(self):
+        verify = self._step("Download and verify the firmware artifact")
+        draft = self._step("Create or reconcile the complete draft release")
+        publish = self._step("Publish the complete matching draft release")
+        for suffix in (".bin", ".manifest", ".bom.cdx.json", "profiles.json", "sha256sums"):
+            with self.subTest(suffix=suffix):
+                self.assertIn(suffix, verify)
+                self.assertIn(suffix, draft)
+                self.assertIn(suffix, publish)
+        self.assertIn("validate_mt3600be_manifest.py", verify)
+        self.assertIn("--draft", draft)
+        self.assertIn("--draft=false", publish)
+
+    def test_promotion_is_fast_forward_exact_sha_with_initial_dev_lease(self):
+        promote = self._step("Promote the exact tested commit to dev")
+        self.assertIn('merge-base --is-ancestor "$INITIAL_DEV_SHA" "$STAGING_SHA"', promote)
+        self.assertIn('--force-with-lease="refs/heads/dev:$INITIAL_DEV_SHA"', promote)
+        self.assertIn('"$STAGING_SHA:refs/heads/dev"', promote)
+        self.assertIn('"$actual_dev_sha" != "$STAGING_SHA"', promote)
+        self.assertNotIn("master", self.workflow)
+
+    def test_cleanup_deletes_only_the_current_run_branch(self):
+        cleanup = self._step("Clean the exact current-run staging branch")
+        self.assertIn("always()", cleanup)
+        self.assertIn('expected_branch="auto-update-staging-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"', cleanup)
+        self.assertIn('"$STAGING_BRANCH" != "$expected_branch"', cleanup)
+        self.assertIn('^auto-update-staging-[1-9][0-9]*-[1-9][0-9]*$', cleanup)
+        self.assertIn('refs/heads/$STAGING_BRANCH', cleanup)
+        self.assertNotRegex(self.workflow, r"(?m)^\s*(sysupgrade|mtd|firstboot|reboot|ssh|scp)\b")
 
 
 class ResolverTests(unittest.TestCase):

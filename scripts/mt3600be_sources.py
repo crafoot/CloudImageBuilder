@@ -3,6 +3,7 @@
 
 import argparse
 import copy
+import datetime
 import hashlib
 import json
 import os
@@ -20,6 +21,9 @@ _SHA = re.compile(r"^[0-9a-fA-F]{40}$")
 _HASH = re.compile(r"^[0-9a-fA-F]{64}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-fA-F]{64}$", re.IGNORECASE)
 _VERSION = re.compile(r"^25\.12\.([0-9]+)$")
+_RELEASE_DATE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
+_CANONICAL_FINGERPRINT = re.compile(r"^[0-9a-f]{64}$")
+_STAGING_BRANCH = re.compile(r"^auto-update-staging-[1-9][0-9]*-[1-9][0-9]*$")
 _IMAGEBUILDER_TAG_PREFIX = "mediatek-filogic-openwrt-"
 _SDK_ARCH_TAG_PREFIX = "aarch64_cortex-a53-openwrt-"
 _PRESENTATION_KEYS = {"display", "description", "label", "url", "name", "title"}
@@ -366,6 +370,38 @@ def validate_digest(value: str) -> str:
     if not isinstance(value, str) or not _DIGEST.fullmatch(value):
         raise ValueError("container digest must use sha256 and 64 hexadecimal characters")
     return value.lower()
+
+
+def automatic_tag(version: str, release_date: str, source_fingerprint: str) -> str:
+    """Build the stable automatic MT3600BE release identity."""
+    if not isinstance(version, str) or not _VERSION.fullmatch(version):
+        raise ValueError("automatic release version must be stable 25.12.x")
+    if not isinstance(release_date, str) or not _RELEASE_DATE.fullmatch(release_date):
+        raise ValueError("automatic release date must use YYYY-MM-DD")
+    try:
+        parsed_date = datetime.date.fromisoformat(release_date)
+    except ValueError as error:
+        raise ValueError("automatic release date must be a valid YYYY-MM-DD date") from error
+    if parsed_date.isoformat() != release_date:
+        raise ValueError("automatic release date must use YYYY-MM-DD")
+    if not isinstance(source_fingerprint, str) or not _CANONICAL_FINGERPRINT.fullmatch(source_fingerprint):
+        raise ValueError("automatic release fingerprint must be a lowercase SHA-256")
+    return f"glinet_gl-mt3600be-{version}-auto-{release_date.replace('-', '')}-{source_fingerprint[:12]}"
+
+
+def validate_staging_branch(value: str) -> str:
+    """Accept only the exact branch namespace reserved for updater runs."""
+    if not isinstance(value, str) or not _STAGING_BRANCH.fullmatch(value):
+        raise ValueError("invalid automatic staging branch")
+    return value
+
+
+def staging_branch(run_id: int, attempt: int) -> str:
+    """Build a current-run-only staging branch from GitHub run identity."""
+    for label, value in (("run ID", run_id), ("run attempt", attempt)):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError(f"{label} must be a positive integer")
+    return validate_staging_branch(f"auto-update-staging-{run_id}-{attempt}")
 
 
 def _validate_hash(value: str) -> str:
