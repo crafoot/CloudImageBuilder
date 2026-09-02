@@ -46,6 +46,11 @@ _FEED_URLS = (
 _NIKKI_REPOSITORY = "nikkinikki-org/OpenWrt-nikki"
 _DAEDE_REPOSITORY = "kenzok8/openwrt-daede"
 _PACKAGE_ASSIGNMENTS = ("PKG_VERSION", "PKG_RELEASE", "PKG_SOURCE", "PKG_HASH")
+_NIKKI_PACKAGE_ASSIGNMENTS = {
+    "nikki": ("PKG_VERSION", "PKG_RELEASE"),
+    "luci-app-nikki": ("PKG_VERSION",),
+    "mihomo-meta": ("PKG_VERSION", "PKG_SOURCE_VERSION", "PKG_MIRROR_HASH", "PKG_BUILD_VERSION"),
+}
 _PIN_UPSTREAMS = {
     "dae": ("daeuniverse/dae", "CORE_UPSTREAM_COMMIT"),
     "daed": ("daeuniverse/daed", "DAED_COMMIT"),
@@ -333,7 +338,8 @@ def _parse_makefile(raw: bytes, label: str, required_assignments=_PACKAGE_ASSIGN
     except UnicodeDecodeError as error:
         raise ValueError(f"{label} Makefile is not UTF-8") from error
     assignments = {}
-    matcher = re.compile(r"^(PKG_VERSION|PKG_RELEASE|PKG_SOURCE|PKG_HASH):=([^\r\n]+)$")
+    names = "|".join(re.escape(name) for name in required_assignments)
+    matcher = re.compile(rf"^({names}):=([^\r\n]+)$")
     for line in text.splitlines():
         match = matcher.fullmatch(line)
         if match:
@@ -345,10 +351,11 @@ def _parse_makefile(raw: bytes, label: str, required_assignments=_PACKAGE_ASSIGN
             assignments[key] = value
     if set(assignments) != set(required_assignments):
         raise ValueError(f"{label} Makefile must contain only required anchored package assignments")
-    if "PKG_HASH" in required_assignments and not re.fullmatch(r"[0-9a-fA-F]{64}", assignments["PKG_HASH"]):
-        raise ValueError(f"{label} PKG_HASH must be SHA-256")
-    if "PKG_HASH" in assignments:
-        assignments["PKG_HASH"] = assignments["PKG_HASH"].lower()
+    for hash_key in ("PKG_HASH", "PKG_MIRROR_HASH"):
+        if hash_key in required_assignments:
+            if not re.fullmatch(r"[0-9a-fA-F]{64}", assignments[hash_key]):
+                raise ValueError(f"{label} {hash_key} must be SHA-256")
+            assignments[hash_key] = assignments[hash_key].lower()
     return assignments
 
 
@@ -445,9 +452,18 @@ def _resolve_nikki(transport: Transport, headers=None) -> dict:
     tree = _github_tree(transport, _NIKKI_REPOSITORY, commit, paths, headers, directories)
     packages = {}
     for path in paths:
-        package = _parse_makefile(_raw_file(transport, _NIKKI_REPOSITORY, commit, path), path)
-        package["tree_sha"] = tree[path.rsplit("/", 1)[0]]
-        packages[path.rsplit("/", 1)[0]] = package
+        name = path.rsplit("/", 1)[0]
+        package = _parse_makefile(
+            _raw_file(transport, _NIKKI_REPOSITORY, commit, path),
+            path,
+            _NIKKI_PACKAGE_ASSIGNMENTS[name],
+        )
+        if name == "mihomo-meta":
+            expected_version = f"v{package['PKG_VERSION']}"
+            if package["PKG_SOURCE_VERSION"] != expected_version or package["PKG_BUILD_VERSION"] != expected_version:
+                raise ValueError("mihomo-meta source and build versions must match PKG_VERSION")
+        package["tree_sha"] = tree[name]
+        packages[name] = package
     return {"repository": _NIKKI_REPOSITORY, "commit": commit, "packages": packages}
 
 
