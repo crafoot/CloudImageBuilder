@@ -441,6 +441,16 @@ class ResolverTests(unittest.TestCase):
         self.assertEqual(candidate["immortalwrt"]["imagebuilder"]["tag"], "mediatek-filogic-openwrt-25.12.2")
         self.assertEqual(candidate["immortalwrt"]["sdk"]["tag"], "aarch64_cortex-a53-openwrt-25.12.2")
 
+    def test_rejects_invalid_imagebuilder_pagination_with_precise_reason(self):
+        url = "https://registry-1.docker.io/v2/immortalwrt/imagebuilder/tags/list?n=100"
+        transport = FixtureTransport({"responses": [{
+            "url": url,
+            "json": {"tags": ["mediatek-filogic-openwrt-25.12.1"]},
+            "headers": {"link": "<https://example.invalid/v2/immortalwrt/imagebuilder/tags/list?n=100&last=tag>; rel=\"next\""},
+        }]})
+        with self.assertRaisesRegex(ValueError, "ImageBuilder.*pagination"):
+            sources._resolve_registry(transport)
+
     def test_selects_highest_version_with_both_exact_target_and_a53_sdk_tags(self):
         candidate = resolve_candidate(self._transport("registry-shared-tags.json", "feed-indexes.json", "github-responses.json", "daede-ready.json"), None)
         self.assertEqual(candidate["immortalwrt"]["version"], "25.12.2")
@@ -538,6 +548,19 @@ class RegistryPaginationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "pagination"):
             sources._list_registry_tags(transport, "immortalwrt/imagebuilder")
 
+    def test_follows_relative_link_to_page_two(self):
+        first_url = "https://registry-1.docker.io/v2/immortalwrt/imagebuilder/tags/list?n=100"
+        relative_url = "/v2/immortalwrt/imagebuilder/tags/list?n=100&last=mediatek-filogic-openwrt-25.12.1"
+        absolute_url = "https://registry-1.docker.io" + relative_url
+        transport = FixtureTransport({"responses": [
+            {"url": first_url, "json": {"tags": ["mediatek-filogic-openwrt-25.12.1"]}, "headers": {"link": f"<{relative_url}>; rel=\"next\""}},
+            {"url": absolute_url, "json": {"tags": ["mediatek-filogic-openwrt-25.12.2"]}, "headers": {}},
+        ]})
+        self.assertEqual(
+            sources._list_registry_tags(transport, "immortalwrt/imagebuilder"),
+            ["mediatek-filogic-openwrt-25.12.1", "mediatek-filogic-openwrt-25.12.2"],
+        )
+
 
 class RedirectPolicyTests(unittest.TestCase):
     def _redirect(self, destination):
@@ -600,7 +623,7 @@ class GitHubResolverTests(unittest.TestCase):
 
     def test_nikki_monitored_tree_changes_change_nikki_group(self):
         baseline = self._candidate()
-        for path in ("nikki/Makefile", "luci-app-nikki/Makefile", "mihomo-meta/Makefile"):
+        for path in ("nikki", "luci-app-nikki", "mihomo-meta"):
             fixture = load_fixture("github-responses.json")
             for response in fixture["responses"]:
                 if "/git/trees/" in response["url"]:
@@ -614,7 +637,7 @@ class GitHubResolverTests(unittest.TestCase):
 
     def test_daede_monitored_tree_and_pins_changes_change_daede_group(self):
         baseline = self._candidate()
-        for path in ("dae/Makefile", "daed/Makefile", "luci-app-daede/Makefile", "ci/pins.env"):
+        for path in ("dae", "daed", "luci-app-daede", "ci/pins.env"):
             fixture = load_fixture("daede-ready.json")
             for response in fixture["responses"]:
                 if "/git/trees/" in response["url"]:
@@ -643,6 +666,57 @@ class GitHubResolverTests(unittest.TestCase):
             FixtureTransport(load_fixture("registry-responses.json")), FixtureTransport(load_fixture("feed-indexes.json")),
             FixtureTransport(fixture), FixtureTransport(load_fixture("daede-ready.json"))), None)
         self.assertEqual(fingerprint(first), fingerprint(second))
+
+    def test_rejects_truncated_github_tree(self):
+        fixture = load_fixture("github-responses.json")
+        for response in fixture["responses"]:
+            if "/git/trees/" in response["url"]:
+                response["json"]["truncated"] = True
+                break
+        with self.assertRaisesRegex(ValueError, "truncated"):
+            self._candidate_from_github_fixture(fixture)
+
+    def test_rejects_missing_or_wrong_type_required_tree_entry(self):
+        for mutation in ("missing", "blob"):
+            with self.subTest(mutation=mutation):
+                fixture = load_fixture("github-responses.json")
+                for response in fixture["responses"]:
+                    if "/git/trees/" in response["url"]:
+                        for entry in response["json"]["tree"]:
+                            if entry["path"] == "nikki":
+                                if mutation == "missing":
+                                    response["json"]["tree"].remove(entry)
+                                else:
+                                    entry["type"] = "blob"
+                                break
+                        break
+                with self.assertRaisesRegex(ValueError, "tree"):
+                    self._candidate_from_github_fixture(fixture)
+
+    def test_rejects_missing_or_wrong_type_required_makefile_entry(self):
+        for mutation in ("missing", "tree"):
+            with self.subTest(mutation=mutation):
+                fixture = load_fixture("github-responses.json")
+                for response in fixture["responses"]:
+                    if "/git/trees/" in response["url"]:
+                        for entry in response["json"]["tree"]:
+                            if entry["path"] == "nikki/Makefile":
+                                if mutation == "missing":
+                                    response["json"]["tree"].remove(entry)
+                                else:
+                                    entry["type"] = "tree"
+                                break
+                        break
+                with self.assertRaisesRegex(ValueError, "tree"):
+                    self._candidate_from_github_fixture(fixture)
+
+    def _candidate_from_github_fixture(self, github_fixture):
+        return resolve_candidate(FixtureTransport.merge(
+            FixtureTransport(load_fixture("registry-responses.json")),
+            FixtureTransport(load_fixture("feed-indexes.json")),
+            FixtureTransport(github_fixture),
+            FixtureTransport(load_fixture("daede-ready.json")),
+        ), None)
 
 
 if __name__ == "__main__":

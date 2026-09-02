@@ -219,11 +219,12 @@ def _validate_registry_tags_url(url: str, repository: str, *, first_page: bool) 
         raise ValueError("invalid registry pagination link") from error
 
 
-def _next_registry_page(link: str, repository: str) -> str:
+def _next_registry_page(link: str, current_url: str, repository: str) -> str:
     match = re.fullmatch(r'\s*<([^<>\s]+)>\s*;\s*rel=(?:"next"|next)\s*', link)
     if not match:
         raise ValueError("invalid registry pagination link")
-    url = match.group(1)
+    _validate_registry_tags_url(current_url, repository, first_page=current_url == _registry_tags_url(repository))
+    url = urllib.parse.urljoin(current_url, match.group(1))
     _validate_registry_tags_url(url, repository, first_page=False)
     return url
 
@@ -247,7 +248,7 @@ def _list_registry_tags(transport: Transport, repository: str) -> list[str]:
             return tags
         if not isinstance(link, str):
             raise ValueError("invalid registry pagination link")
-        url = _next_registry_page(link, repository)
+        url = _next_registry_page(link, url, repository)
     raise ValueError("invalid registry pagination link: page limit")
 
 
@@ -264,8 +265,18 @@ def _github_commit(transport: Transport, repository: str, ref: str, headers=None
     return validate_sha(value.get("sha"))
 
 
-def _github_tree(transport: Transport, repository: str, commit: str, required_paths: tuple[str, ...], headers=None) -> dict:
-    tree = _github_json(transport, f"repos/{repository}/git/trees/{commit}?recursive=1", headers).get("tree")
+def _github_tree(
+    transport: Transport,
+    repository: str,
+    commit: str,
+    required_paths: tuple[str, ...],
+    headers=None,
+    required_tree_paths: tuple[str, ...] = (),
+) -> dict:
+    response = _github_json(transport, f"repos/{repository}/git/trees/{commit}?recursive=1", headers)
+    if response.get("truncated") is True:
+        raise ValueError(f"truncated package tree for {repository}")
+    tree = response.get("tree")
     if not isinstance(tree, list):
         raise ValueError(f"missing package tree for {repository}")
     found = {entry.get("path"): entry for entry in tree if isinstance(entry, dict)}
@@ -274,7 +285,15 @@ def _github_tree(transport: Transport, repository: str, commit: str, required_pa
         if not isinstance(entry, dict) or entry.get("type") != "blob":
             raise ValueError(f"missing package tree path {path}")
         validate_sha(entry.get("sha"))
-    return {path: validate_sha(found[path]["sha"]) for path in required_paths}
+    for path in required_tree_paths:
+        entry = found.get(path)
+        if not isinstance(entry, dict) or entry.get("type") != "tree":
+            raise ValueError(f"missing package tree directory path {path}")
+        validate_sha(entry.get("sha"))
+    return {
+        path: validate_sha(found[path]["sha"])
+        for path in (*required_paths, *required_tree_paths)
+    }
 
 
 def _raw_file(transport: Transport, repository: str, commit: str, path: str) -> bytes:
@@ -359,9 +378,12 @@ def _docker_manifest_digest(transport: Transport, repository: str, tag: str) -> 
 def _resolve_registry(transport: Transport) -> tuple[str, dict, dict]:
     try:
         image_tags = _list_registry_tags(transport, "immortalwrt/imagebuilder")
+    except (OSError, ValueError) as error:
+        raise ValueError(f"ImageBuilder registry tags are invalid: {error}") from error
+    try:
         sdk_tags = _list_registry_tags(transport, "immortalwrt/sdk")
     except (OSError, ValueError) as error:
-        raise ValueError("SDK exact version tag is missing") from error
+        raise ValueError(f"SDK exact version tag is missing or invalid: {error}") from error
     imagebuilder_versions = [
         tag.removeprefix(_IMAGEBUILDER_TAG_PREFIX)
         for tag in image_tags
@@ -400,11 +422,12 @@ def _resolve_feeds(transport: Transport, version: str) -> dict:
 def _resolve_nikki(transport: Transport, headers=None) -> dict:
     commit = _github_commit(transport, _NIKKI_REPOSITORY, "main", headers)
     paths = ("nikki/Makefile", "luci-app-nikki/Makefile", "mihomo-meta/Makefile")
-    tree = _github_tree(transport, _NIKKI_REPOSITORY, commit, paths, headers)
+    directories = ("nikki", "luci-app-nikki", "mihomo-meta")
+    tree = _github_tree(transport, _NIKKI_REPOSITORY, commit, paths, headers, directories)
     packages = {}
     for path in paths:
         package = _parse_makefile(_raw_file(transport, _NIKKI_REPOSITORY, commit, path), path)
-        package["tree_sha"] = tree[path]
+        package["tree_sha"] = tree[path.rsplit("/", 1)[0]]
         packages[path.rsplit("/", 1)[0]] = package
     return {"repository": _NIKKI_REPOSITORY, "commit": commit, "packages": packages}
 
@@ -412,11 +435,12 @@ def _resolve_nikki(transport: Transport, headers=None) -> dict:
 def _resolve_daede(transport: Transport, headers=None) -> dict:
     commit = _github_commit(transport, _DAEDE_REPOSITORY, "main", headers)
     paths = ("dae/Makefile", "daed/Makefile", "luci-app-daede/Makefile", "ci/pins.env")
-    tree = _github_tree(transport, _DAEDE_REPOSITORY, commit, paths, headers)
+    directories = ("dae", "daed", "luci-app-daede")
+    tree = _github_tree(transport, _DAEDE_REPOSITORY, commit, paths, headers, directories)
     packages = {}
     for path in paths[:3]:
         package = _parse_makefile(_raw_file(transport, _DAEDE_REPOSITORY, commit, path), path)
-        package["tree_sha"] = tree[path]
+        package["tree_sha"] = tree[path.rsplit("/", 1)[0]]
         packages[path.rsplit("/", 1)[0]] = package
     pins = _parse_pins(_raw_file(transport, _DAEDE_REPOSITORY, commit, "ci/pins.env"))
     not_ready = []
