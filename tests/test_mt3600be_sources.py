@@ -1,0 +1,81 @@
+import json
+import pathlib
+import subprocess
+import sys
+import unittest
+
+from scripts.mt3600be_sources import (
+    canonical_bytes,
+    compare_states,
+    fingerprint,
+    select_stable_25_12,
+    validate_digest,
+    validate_sha,
+)
+
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+FIXTURES = ROOT / "tests" / "fixtures" / "mt3600be"
+
+
+def load_fixture(name):
+    return json.loads((FIXTURES / name).read_text())
+
+
+class Mt3600beSourcesTests(unittest.TestCase):
+    def test_selects_highest_stable_25_12(self):
+        tags = ["25.12.1", "25.12.3", "25.12.2", "25.12-SNAPSHOT", "25.12.4-rc1", "26.01.0"]
+        self.assertEqual(select_stable_25_12(tags), "25.12.3")
+
+    def test_rejects_abbreviated_sha(self):
+        with self.assertRaisesRegex(ValueError, "40-character"):
+            validate_sha("3799926")
+
+    def test_rejects_non_sha256_container_digest(self):
+        with self.assertRaisesRegex(ValueError, "sha256"):
+            validate_digest("sha1:" + "a" * 40)
+
+    def test_canonicalization_ignores_object_key_order(self):
+        self.assertEqual(fingerprint({"b": 2, "a": 1}), fingerprint({"a": 1, "b": 2}))
+        self.assertEqual(canonical_bytes({"b": 2, "a": 1}), b'{"a":1,"b":2}')
+
+    def test_presentation_fields_do_not_change_fingerprint(self):
+        self.assertEqual(
+            fingerprint({"schema": 1, "version": "25.12.1", "display": "first"}),
+            fingerprint({"schema": 1, "version": "25.12.1", "display": "second"}),
+        )
+
+    def test_missing_previous_lock_is_changed(self):
+        decision, groups = compare_states(None, {"schema": 1, "immortalwrt": {"version": "25.12.1"}})
+        self.assertEqual(decision, "changed")
+        self.assertIn("bootstrap", groups)
+
+    def test_same_version_new_image_digest_is_changed(self):
+        decision, groups = compare_states(load_fixture("previous-lock.json"), load_fixture("candidate-imagebuilder-changed.json"))
+        self.assertEqual(decision, "changed")
+        self.assertIn("immortalwrt.imagebuilder", groups)
+
+    def test_same_state_is_unchanged(self):
+        decision, groups = compare_states(load_fixture("previous-lock.json"), load_fixture("candidate-same.json"))
+        self.assertEqual(decision, "unchanged")
+        self.assertEqual(groups, [])
+
+    def test_presentation_change_inside_group_is_unchanged(self):
+        previous = {"schema": 1, "immortalwrt": {"version": "25.12.1", "imagebuilder": {"digest": "sha256:" + "a" * 64, "display": "old"}}}
+        candidate = {"schema": 1, "immortalwrt": {"version": "25.12.1", "imagebuilder": {"digest": "sha256:" + "a" * 64, "display": "new"}}}
+        self.assertEqual(compare_states(previous, candidate), ("unchanged", []))
+
+    def test_cli_compare_returns_json_and_success(self):
+        result = subprocess.run(
+            [sys.executable, "scripts/mt3600be_sources.py", "compare", "--previous", str(FIXTURES / "previous-lock.json"), "--candidate", str(FIXTURES / "candidate-same.json")],
+            cwd=ROOT, capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0)
+        output = json.loads(result.stdout)
+        self.assertEqual(output["decision"], "unchanged")
+        self.assertIn("fingerprint", output)
+        self.assertEqual(output["changed_groups"], [])
+
+
+if __name__ == "__main__":
+    unittest.main()

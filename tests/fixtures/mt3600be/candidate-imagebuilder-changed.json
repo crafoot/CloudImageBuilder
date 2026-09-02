@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "immortalwrt": {
+    "version": "25.12.1",
+    "commit": "1111111111111111111111111111111111111111",
+    "imagebuilder": {"digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"},
+    "sdk": {"digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+    "feeds": {"digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}
+  },
+  "nikki": {"commit": "2222222222222222222222222222222222222222", "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"},
+  "daede": {
+    "dae": {"commit": "3333333333333333333333333333333333333333", "digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"},
+    "daed": {"commit": "4444444444444444444444444444444444444444", "digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"},
+    "luci": {"commit": "5555555555555555555555555555555555555555", "digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999"}
+  }
+}

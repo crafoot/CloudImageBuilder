@@ -1,0 +1,16 @@
+{
+  "display": "candidate",
+  "daede": {
+    "luci": {"digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999", "commit": "5555555555555555555555555555555555555555"},
+    "daed": {"digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "commit": "4444444444444444444444444444444444444444"},
+    "dae": {"digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "commit": "3333333333333333333333333333333333333333"}
+  },
+  "nikki": {"digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "commit": "2222222222222222222222222222222222222222"},
+  "immortalwrt": {
+    "feeds": {"digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},
+    "sdk": {"digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+    "imagebuilder": {"digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+    "commit": "1111111111111111111111111111111111111111", "version": "25.12.1"
+  },
+  "schema": 1
+}
