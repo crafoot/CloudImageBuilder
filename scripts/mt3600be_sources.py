@@ -39,9 +39,9 @@ _ALLOWED_HOSTS = {
     "raw.githubusercontent.com",
 }
 _FEED_URLS = (
-    "https://downloads.immortalwrt.org/releases/{version}/packages/aarch64_cortex-a53/base/Packages.adb",
-    "https://downloads.immortalwrt.org/releases/{version}/packages/aarch64_cortex-a53/luci/Packages.adb",
-    "https://downloads.immortalwrt.org/releases/{version}/packages/aarch64_cortex-a53/packages/Packages.adb",
+    "https://downloads.immortalwrt.org/releases/{version}/packages/aarch64_cortex-a53/base/packages.adb",
+    "https://downloads.immortalwrt.org/releases/{version}/packages/aarch64_cortex-a53/luci/packages.adb",
+    "https://downloads.immortalwrt.org/releases/{version}/packages/aarch64_cortex-a53/packages/packages.adb",
 )
 _NIKKI_REPOSITORY = "nikkinikki-org/OpenWrt-nikki"
 _DAEDE_REPOSITORY = "kenzok8/openwrt-daede"

@@ -475,7 +475,7 @@ class ResolverTests(unittest.TestCase):
         changed = self._transport("registry-responses.json", "feed-indexes.json", "github-responses.json", "daede-ready.json")
         for response in changed.responses.values():
             for item in response:
-                if item["url"].endswith("/luci/Packages.adb"):
+                if item["url"].endswith("/luci/packages.adb"):
                     item["bytes"] = "changed luci feed\n"
         first = resolve_candidate(ready, None)
         second = resolve_candidate(changed, None)
