@@ -24,13 +24,12 @@ def parse_manifest(text: str) -> dict[str, str]:
     """Parse NAME - VERSION rows, rejecting malformed or conflicting rows."""
     packages: dict[str, str] = {}
     for line_number, raw_line in enumerate(text.splitlines(), start=1):
-        line = raw_line.strip()
-        if not line:
-            continue
-        empty_version = _EMPTY_VERSION.fullmatch(line)
+        if not raw_line:
+            raise ValueError(f"manifest line {line_number} must be NAME - VERSION")
+        empty_version = _EMPTY_VERSION.fullmatch(raw_line)
         if empty_version:
             raise ValueError(f"manifest line {line_number} has an empty version for {empty_version.group(1)}")
-        match = _ROW.fullmatch(line)
+        match = _ROW.fullmatch(raw_line)
         if not match:
             raise ValueError(f"manifest line {line_number} must be NAME - VERSION")
         name, version = match.groups()

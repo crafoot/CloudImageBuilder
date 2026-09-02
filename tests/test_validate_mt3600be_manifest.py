@@ -1,4 +1,8 @@
+import json
 import pathlib
+import subprocess
+import sys
+import tempfile
 import unittest
 
 from scripts.validate_mt3600be_manifest import parse_manifest, validate_required
@@ -49,6 +53,32 @@ class ManifestTests(unittest.TestCase):
     def test_rejects_empty_version(self):
         with self.assertRaisesRegex(ValueError, "version"):
             parse_manifest("nikki - \n")
+
+    def test_rejects_blank_rows(self):
+        with self.assertRaisesRegex(ValueError, r"line 2.*NAME - VERSION"):
+            parse_manifest("nikki - 1.0\n\ndaed - 1.0\n")
+
+    def test_rejects_surrounding_whitespace(self):
+        for text in (" nikki - 1.0\n", "nikki - 1.0 \n"):
+            with self.subTest(text=repr(text)), self.assertRaisesRegex(ValueError, "NAME - VERSION"):
+                parse_manifest(text)
+
+    def test_cli_valid_manifest_succeeds(self):
+        result = subprocess.run(
+            [sys.executable, "scripts/validate_mt3600be_manifest.py", str(FIXTURES / "manifest-complete.txt")],
+            cwd=ROOT, capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertTrue(json.loads(result.stdout)["valid"])
+
+    def test_cli_invalid_manifest_writes_invalid_json(self):
+        with tempfile.NamedTemporaryFile(suffix=".json") as output:
+            result = subprocess.run(
+                [sys.executable, "scripts/validate_mt3600be_manifest.py", str(FIXTURES / "manifest-missing-daed.txt"), "--json-output", output.name],
+                cwd=ROOT, capture_output=True, text=True,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(json.loads(output.read().decode("utf-8"))["valid"])
 
 
 if __name__ == "__main__":
