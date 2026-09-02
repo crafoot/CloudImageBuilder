@@ -20,6 +20,8 @@ _SHA = re.compile(r"^[0-9a-fA-F]{40}$")
 _HASH = re.compile(r"^[0-9a-fA-F]{64}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-fA-F]{64}$", re.IGNORECASE)
 _VERSION = re.compile(r"^25\.12\.([0-9]+)$")
+_IMAGEBUILDER_TAG_PREFIX = "mediatek-filogic-openwrt-"
+_SDK_ARCH_TAG_PREFIX = "aarch64_cortex-a53-openwrt-"
 _PRESENTATION_KEYS = {"display", "description", "label", "url", "name", "title"}
 _ALLOWED_HOSTS = {
     "registry-1.docker.io",
@@ -252,11 +254,18 @@ def _resolve_registry(transport: Transport) -> tuple[str, dict, dict]:
         sdk_tags, _ = transport.get_json("https://registry-1.docker.io/v2/immortalwrt/sdk/tags/list")
     except (OSError, ValueError) as error:
         raise ValueError("SDK exact version tag is missing") from error
-    version = select_stable_25_12(image_tags.get("tags", []))
-    if version not in sdk_tags.get("tags", []):
-        raise ValueError("SDK exact version tag is missing")
-    imagebuilder = {"repository": "immortalwrt/imagebuilder", "tag": version, "digest": _docker_manifest_digest(transport, "immortalwrt/imagebuilder", version)}
-    sdk = {"repository": "immortalwrt/sdk", "tag": version, "digest": _docker_manifest_digest(transport, "immortalwrt/sdk", version)}
+    imagebuilder_versions = [
+        tag.removeprefix(_IMAGEBUILDER_TAG_PREFIX)
+        for tag in image_tags.get("tags", [])
+        if isinstance(tag, str) and tag.startswith(_IMAGEBUILDER_TAG_PREFIX)
+    ]
+    version = select_stable_25_12(imagebuilder_versions)
+    imagebuilder_tag = f"{_IMAGEBUILDER_TAG_PREFIX}{version}"
+    sdk_tag = f"{_SDK_ARCH_TAG_PREFIX}{version}"
+    if sdk_tag not in sdk_tags.get("tags", []):
+        raise ValueError("SDK exact architecture tag is missing")
+    imagebuilder = {"repository": "immortalwrt/imagebuilder", "tag": imagebuilder_tag, "digest": _docker_manifest_digest(transport, "immortalwrt/imagebuilder", imagebuilder_tag)}
+    sdk = {"repository": "immortalwrt/sdk", "tag": sdk_tag, "digest": _docker_manifest_digest(transport, "immortalwrt/sdk", sdk_tag)}
     return version, imagebuilder, sdk
 
 
@@ -570,14 +579,14 @@ def _cli_build_env(args):
         if not isinstance(version, str) or not _VERSION.fullmatch(version):
             raise ValueError("invalid ImmortalWrt version")
         refs = {}
-        for name, key, repository in (
-            ("IMAGEBUILDER_REFERENCE", "imagebuilder", "immortalwrt/imagebuilder"),
-            ("SDK_ARCH_REFERENCE", "sdk", "immortalwrt/sdk"),
+        for name, key, repository, tag in (
+            ("IMAGEBUILDER_REFERENCE", "imagebuilder", "immortalwrt/imagebuilder", f"{_IMAGEBUILDER_TAG_PREFIX}{version}"),
+            ("SDK_ARCH_REFERENCE", "sdk", "immortalwrt/sdk", f"{_SDK_ARCH_TAG_PREFIX}{version}"),
         ):
             image = immortalwrt.get(key)
-            if not isinstance(image, dict) or image.get("tag") != version or image.get("repository") != repository:
+            if not isinstance(image, dict) or image.get("tag") != tag or image.get("repository") != repository:
                 raise ValueError(f"invalid {key} reference")
-            refs[name] = f"{repository}:{version}@{validate_digest(image.get('digest'))}"
+            refs[name] = f"{repository}:{tag}@{validate_digest(image.get('digest'))}"
         nikki = lock.get("nikki")
         daede = lock.get("daede")
         if not isinstance(nikki, dict) or not isinstance(daede, dict):

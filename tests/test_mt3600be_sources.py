@@ -128,8 +128,8 @@ class BuildEnvironmentTests(unittest.TestCase):
             "schema": 1,
             "immortalwrt": {
                 "version": "25.12.1",
-                "imagebuilder": {"repository": "immortalwrt/imagebuilder", "tag": "25.12.1", "digest": "sha256:" + "a" * 64},
-                "sdk": {"repository": "immortalwrt/sdk", "tag": "25.12.1", "digest": "sha256:" + "b" * 64},
+                "imagebuilder": {"repository": "immortalwrt/imagebuilder", "tag": "mediatek-filogic-openwrt-25.12.1", "digest": "sha256:" + "a" * 64},
+                "sdk": {"repository": "immortalwrt/sdk", "tag": "aarch64_cortex-a53-openwrt-25.12.1", "digest": "sha256:" + "b" * 64},
             },
             "nikki": {"commit": "c" * 40},
             "daede": {"commit": "d" * 40},
@@ -165,8 +165,8 @@ class BuildEnvironmentTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         values = dict(line.split("=", 1) for line in result.stdout.splitlines())
         self.assertEqual(values["IMMORTAL_VERSION"], "25.12.1")
-        self.assertEqual(values["IMAGEBUILDER_REFERENCE"], "immortalwrt/imagebuilder:25.12.1@sha256:" + "a" * 64)
-        self.assertEqual(values["SDK_ARCH_REFERENCE"], "immortalwrt/sdk:25.12.1@sha256:" + "b" * 64)
+        self.assertEqual(values["IMAGEBUILDER_REFERENCE"], "immortalwrt/imagebuilder:mediatek-filogic-openwrt-25.12.1@sha256:" + "a" * 64)
+        self.assertEqual(values["SDK_ARCH_REFERENCE"], "immortalwrt/sdk:aarch64_cortex-a53-openwrt-25.12.1@sha256:" + "b" * 64)
         self.assertEqual(values["NIKKI_REF"], "c" * 40)
         self.assertEqual(values["DAEDE_REF"], "d" * 40)
 
@@ -202,6 +202,44 @@ class BuildEnvironmentTests(unittest.TestCase):
             )
         self._assert_rejected_without_environment_lines(result)
 
+    def test_build_env_rejects_generic_container_tags_for_mt3600be(self):
+        lock = self._lock()
+        lock["immortalwrt"]["imagebuilder"]["tag"] = "25.12.1"
+        self._assert_rejected_without_environment_lines(self._build_env(lock))
+
+
+class WorkflowContractTests(unittest.TestCase):
+    WORKFLOW = ROOT / ".github" / "workflows" / "build-wireless-router25.12.yml"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.workflow = cls.WORKFLOW.read_text(encoding="utf-8")
+
+    def test_automatic_update_requires_mt3600be_and_a_present_lock(self):
+        self.assertIn(
+            'if [[ "$AUTOMATIC_UPDATE" == \'true\' && "$PROFILE" != \'glinet_gl-mt3600be\' ]]; then',
+            self.workflow,
+        )
+        self.assertIn(
+            'if [[ "$AUTOMATIC_UPDATE" == \'true\' && ! -f "$lock_path" ]]; then',
+            self.workflow,
+        )
+
+    def test_automatic_update_never_enables_compatibility_fallback(self):
+        self.assertIn(
+            'if [[ "$AUTOMATIC_UPDATE" != \'true\' && ! -e "$lock_path" ]]; then',
+            self.workflow,
+        )
+
+    def test_package_job_checks_automatic_fingerprint_before_building(self):
+        package_job = self.workflow.split("  build:\n", 1)[0]
+        self.assertIn('REQUESTED_SOURCE_FINGERPRINT: ${{ github.event.inputs.source_fingerprint }}', package_job)
+        self.assertIn('Automatic build source fingerprint does not match the validated lock', package_job)
+
+    def test_sdk_action_receives_locked_tag_and_digest_suffix_unchanged(self):
+        self.assertIn('sdk_action_arch="${sdk_reference#immortalwrt/sdk:}"', self.workflow)
+        self.assertNotIn('sdk_action_arch="aarch64_cortex-a53-openwrt-${sdk_version}@${sdk_digest}"', self.workflow)
+
 
 class ResolverTests(unittest.TestCase):
     def _transport(self, *names):
@@ -214,8 +252,9 @@ class ResolverTests(unittest.TestCase):
     def test_follows_bearer_challenge_and_records_exact_manifest_digest(self):
         candidate = resolve_candidate(self._transport("registry-responses.json", "feed-indexes.json", "github-responses.json", "daede-ready.json"), None)
         imagebuilder = candidate["immortalwrt"]["imagebuilder"]
-        self.assertEqual(imagebuilder["tag"], "25.12.1")
+        self.assertEqual(imagebuilder["tag"], "mediatek-filogic-openwrt-25.12.1")
         self.assertEqual(imagebuilder["digest"], "sha256:" + "a" * 64)
+        self.assertEqual(candidate["immortalwrt"]["sdk"]["tag"], "aarch64_cortex-a53-openwrt-25.12.1")
 
     def test_requires_both_imagebuilder_and_sdk_tags(self):
         fixture = load_fixture("registry-responses.json")

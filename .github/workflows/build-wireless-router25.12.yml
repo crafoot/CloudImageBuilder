@@ -553,23 +553,31 @@ jobs:
       - name: Load validated MT3600BE build environment
         id: build_env
         shell: bash
+        env:
+          AUTOMATIC_UPDATE: ${{ github.event.inputs.automatic_update }}
+          REQUESTED_SOURCE_FINGERPRINT: ${{ github.event.inputs.source_fingerprint }}
         run: |
           set -euo pipefail
           lock_path="$GITHUB_WORKSPACE/build-config/config/mt3600be-sources.lock.json"
           build_env_args=(build-env --lock "$lock_path")
-          if [[ ! -e "$lock_path" ]]; then
+          if [[ "$AUTOMATIC_UPDATE" != 'true' && ! -e "$lock_path" ]]; then
             build_env_args+=(--compat-run7)
           fi
           python3 "$GITHUB_WORKSPACE/build-config/scripts/mt3600be_sources.py" "${build_env_args[@]}" > "$GITHUB_OUTPUT"
 
+          locked_fingerprint="$(sed -n 's/^SOURCE_FINGERPRINT=//p' "$GITHUB_OUTPUT")"
+          if [[ "$AUTOMATIC_UPDATE" == 'true' ]]; then
+            if [[ -z "$REQUESTED_SOURCE_FINGERPRINT" || "$REQUESTED_SOURCE_FINGERPRINT" != "$locked_fingerprint" ]]; then
+              echo 'Automatic build source fingerprint does not match the validated lock'
+              exit 1
+            fi
+          fi
+
           sdk_reference="$(sed -n 's/^SDK_ARCH_REFERENCE=//p' "$GITHUB_OUTPUT")"
-          sdk_tag_and_digest="${sdk_reference#immortalwrt/sdk:}"
-          if [[ "$sdk_tag_and_digest" == aarch64_cortex-a53-openwrt-* ]]; then
-            sdk_action_arch="$sdk_tag_and_digest"
-          else
-            sdk_version="${sdk_tag_and_digest%%@*}"
-            sdk_digest="${sdk_tag_and_digest#*@}"
-            sdk_action_arch="aarch64_cortex-a53-openwrt-${sdk_version}@${sdk_digest}"
+          sdk_action_arch="${sdk_reference#immortalwrt/sdk:}"
+          if [[ "$sdk_action_arch" != aarch64_cortex-a53-openwrt-*@sha256:* ]]; then
+            echo 'SDK reference is not an exact A53 architecture tag with digest'
+            exit 1
           fi
           printf 'SDK_ACTION_ARCH=%s\n' "$sdk_action_arch" >> "$GITHUB_OUTPUT"
 
@@ -660,6 +668,28 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
+      - name: Validate automatic MT3600BE update request
+        shell: bash
+        env:
+          AUTOMATIC_UPDATE: ${{ github.event.inputs.automatic_update }}
+          PROFILE: ${{ github.event.inputs.profile }}
+          REQUESTED_SOURCE_FINGERPRINT: ${{ github.event.inputs.source_fingerprint }}
+        run: |
+          set -euo pipefail
+          lock_path="$GITHUB_WORKSPACE/config/mt3600be-sources.lock.json"
+          if [[ "$AUTOMATIC_UPDATE" == 'true' && "$PROFILE" != 'glinet_gl-mt3600be' ]]; then
+            echo 'automatic_update=true is only supported for glinet_gl-mt3600be'
+            exit 1
+          fi
+          if [[ "$AUTOMATIC_UPDATE" == 'true' && ! -f "$lock_path" ]]; then
+            echo 'automatic_update=true requires a present MT3600BE source lock'
+            exit 1
+          fi
+          if [[ "$AUTOMATIC_UPDATE" == 'true' && ! "$REQUESTED_SOURCE_FINGERPRINT" =~ ^[0-9a-f]{64}$ ]]; then
+            echo 'automatic_update=true requires a lowercase SHA-256 source fingerprint'
+            exit 1
+          fi
+
       - name: Load validated MT3600BE firmware environment
         if: ${{ github.event.inputs.profile == 'glinet_gl-mt3600be' }}
         shell: bash
@@ -670,7 +700,7 @@ jobs:
           set -euo pipefail
           lock_path="$GITHUB_WORKSPACE/config/mt3600be-sources.lock.json"
           build_env_args=(build-env --lock "$lock_path")
-          if [[ ! -e "$lock_path" ]]; then
+          if [[ "$AUTOMATIC_UPDATE" != 'true' && ! -e "$lock_path" ]]; then
             build_env_args+=(--compat-run7)
           fi
           build_env_path="$RUNNER_TEMP/mt3600be-build.env"
