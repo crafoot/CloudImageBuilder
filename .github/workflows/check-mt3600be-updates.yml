@@ -258,6 +258,7 @@ jobs:
             exit 1
           fi
           git switch --create "$staging_branch" "$INITIAL_DEV_SHA"
+          mkdir -p config
           install -m 0644 "$CANDIDATE_PATH" config/mt3600be-sources.lock.json
           git add -- config/mt3600be-sources.lock.json
           if [[ "$(git diff --cached --name-only)" != 'config/mt3600be-sources.lock.json' ]]; then

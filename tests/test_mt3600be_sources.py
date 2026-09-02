@@ -339,6 +339,10 @@ class OrchestratorWorkflowContractTests(unittest.TestCase):
         self.assertIn("exit 1", resolve)
         self.assertIn("steps.resolve.outputs.decision == 'changed'", stage)
 
+    def test_bootstrap_creates_config_directory_before_lock_install(self):
+        stage = self._step("Create and push the candidate staging branch")
+        self.assertLess(stage.index("mkdir -p config"), stage.index('install -m 0644 "$CANDIDATE_PATH"'))
+
     def test_existing_lock_without_matching_release_fails_closed(self):
         reconcile = self._step("Reconcile the current successful lock release")
         self.assertIn("has no matching release", reconcile)
