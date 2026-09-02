@@ -369,6 +369,28 @@ class OrchestratorWorkflowContractTests(unittest.TestCase):
         self.assertIn("--draft", draft)
         self.assertIn("--draft=false", publish)
 
+    def test_existing_draft_requires_exact_current_asset_set_then_clobbers_from_current_artifact(self):
+        draft = self._step("Create or reconcile the complete draft release")
+        compare_assets = 'asset_set_delta="$(comm -3 "$current_asset_names_path" "$release_asset_names_path")"'
+        upload_current = 'gh release upload "$release_tag" "${asset_files[@]}" --clobber'
+        self.assertIn('current_asset_names_path="$RUNNER_TEMP/current-asset-basenames.txt"', draft)
+        self.assertIn('release_asset_names_path="$RUNNER_TEMP/release-asset-basenames.txt"', draft)
+        self.assertIn(compare_assets, draft)
+        self.assertIn('missing_on_release="$(comm -23 "$current_asset_names_path" "$release_asset_names_path")"', draft)
+        self.assertIn('extra_on_release="$(comm -13 "$current_asset_names_path" "$release_asset_names_path")"', draft)
+        self.assertIn("Existing draft asset set differs from current verified Artifact", draft)
+        self.assertIn(upload_current, draft)
+        self.assertLess(draft.index(compare_assets), draft.index(upload_current))
+        self.assertLess(draft.index(upload_current), draft.index('release="$(gh release view'))
+        self.assertIn('final_release_asset_names_path="$RUNNER_TEMP/final-release-asset-basenames.txt"', draft)
+        self.assertIn('comm -3 "$current_asset_names_path" "$final_release_asset_names_path"', draft)
+
+    def test_release_must_still_be_a_draft_immediately_before_promotion(self):
+        draft = self._step("Create or reconcile the complete draft release")
+        self.assertIn("must remain a draft until dev promotion", draft)
+        self.assertIn('[[ "$(jq -r \'.isDraft\' <<< "$release")" != \'true\' ]]', draft)
+        self.assertNotIn("!= 'true' &&", draft)
+
     def test_promotion_is_fast_forward_exact_sha_with_initial_dev_lease(self):
         promote = self._step("Promote the exact tested commit to dev")
         self.assertIn('merge-base --is-ancestor "$INITIAL_DEV_SHA" "$STAGING_SHA"', promote)

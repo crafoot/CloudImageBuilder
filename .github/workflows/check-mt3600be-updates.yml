@@ -463,6 +463,8 @@ jobs:
           } > "$notes_path"
 
           mapfile -d '' asset_files < <(find "$ARTIFACT_DIR" -type f -print0 | sort -z)
+          current_asset_names_path="$RUNNER_TEMP/current-asset-basenames.txt"
+          printf '%s\n' "${asset_files[@]##*/}" | LC_ALL=C sort -u > "$current_asset_names_path"
           releases_path="$RUNNER_TEMP/candidate-releases.json"
           gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" > "$releases_path"
           matches="$(jq --arg marker "$marker" '[.[][] | select((.body // "") | contains($marker))]' "$releases_path")"
@@ -489,12 +491,26 @@ jobs:
               echo "Published candidate release $release_tag exists before exact dev promotion" | tee -a "$GITHUB_STEP_SUMMARY"
               exit 1
             fi
+            release_asset_names_path="$RUNNER_TEMP/release-asset-basenames.txt"
+            jq -r '.[0].assets[].name' <<< "$matches" | LC_ALL=C sort -u > "$release_asset_names_path"
+            asset_set_delta="$(comm -3 "$current_asset_names_path" "$release_asset_names_path")"
+            if [[ -n "$asset_set_delta" ]]; then
+              missing_on_release="$(comm -23 "$current_asset_names_path" "$release_asset_names_path")"
+              extra_on_release="$(comm -13 "$current_asset_names_path" "$release_asset_names_path")"
+              {
+                echo 'Existing draft asset set differs from current verified Artifact'
+                echo "- Missing from draft: ${missing_on_release:-none}"
+                echo "- Extra in draft: ${extra_on_release:-none}"
+              } | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
             gh release edit "$release_tag" \
               --draft \
               --latest=false \
               --target "$STAGING_SHA" \
               --title "GL-MT3600BE $version automatic build" \
               --notes-file "$notes_path"
+            gh release upload "$release_tag" "${asset_files[@]}" --clobber
           else
             if gh release view "$PROPOSED_TAG" > /dev/null 2>&1 || git ls-remote --exit-code --tags origin "refs/tags/$PROPOSED_TAG" > /dev/null 2>&1; then
               echo "Release tag $PROPOSED_TAG exists without the matching full fingerprint" | tee -a "$GITHUB_STEP_SUMMARY"
@@ -510,6 +526,19 @@ jobs:
           fi
 
           release="$(gh release view "$release_tag" --json assets,body,isDraft,tagName,targetCommitish)"
+          final_release_asset_names_path="$RUNNER_TEMP/final-release-asset-basenames.txt"
+          jq -r '.assets[].name' <<< "$release" | LC_ALL=C sort -u > "$final_release_asset_names_path"
+          final_asset_set_delta="$(comm -3 "$current_asset_names_path" "$final_release_asset_names_path")"
+          if [[ -n "$final_asset_set_delta" ]]; then
+            missing_on_release="$(comm -23 "$current_asset_names_path" "$final_release_asset_names_path")"
+            extra_on_release="$(comm -13 "$current_asset_names_path" "$final_release_asset_names_path")"
+            {
+              echo 'Final draft asset set differs from current verified Artifact'
+              echo "- Missing from draft: ${missing_on_release:-none}"
+              echo "- Extra in draft: ${extra_on_release:-none}"
+            } | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
           if [[ "$(jq -r '.targetCommitish' <<< "$release")" != "$STAGING_SHA" ]] || ! jq -e --arg marker "$marker" '(.body // "") | contains($marker)' <<< "$release" > /dev/null; then
             echo "Release $release_tag does not match fingerprint and exact tested SHA" | tee -a "$GITHUB_STEP_SUMMARY"
             exit 1
@@ -524,8 +553,8 @@ jobs:
             printf 'Release %s failed complete-draft verification; missing assets: %s\n' "$release_tag" "${missing[*]}" | tee -a "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
-          if [[ "$(jq -r '.isDraft' <<< "$release")" != 'true' && "$(jq -r '.isDraft' <<< "$release")" != 'false' ]]; then
-            echo "Release $release_tag has an invalid draft state" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [[ "$(jq -r '.isDraft' <<< "$release")" != 'true' ]]; then
+            echo "Release $release_tag must remain a draft until dev promotion" | tee -a "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
           echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
