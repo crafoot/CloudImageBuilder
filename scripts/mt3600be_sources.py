@@ -46,15 +46,24 @@ _FEED_URLS = (
 _NIKKI_REPOSITORY = "nikkinikki-org/OpenWrt-nikki"
 _DAEDE_REPOSITORY = "kenzok8/openwrt-daede"
 _PACKAGE_ASSIGNMENTS = ("PKG_VERSION", "PKG_RELEASE", "PKG_SOURCE", "PKG_HASH")
-_PIN_REPOSITORIES = {
-    "DAE": "daeuniverse/dae",
-    "DAED": "daeuniverse/daed",
-    "DAE_WING": "daeuniverse/dae-wing",
+_PIN_UPSTREAMS = {
+    "dae": ("daeuniverse/dae", "CORE_UPSTREAM_COMMIT"),
+    "daed": ("daeuniverse/daed", "DAED_COMMIT"),
+    "dae-wing": ("daeuniverse/dae-wing", "WING_COMMIT"),
 }
-_PIN_KEYS = frozenset(
-    {"DAE_SOURCE_HASH"}
-    | {f"{name}_{suffix}" for name in _PIN_REPOSITORIES for suffix in ("REPOSITORY", "COMMIT")}
+_PIN_VERSION_KEYS = frozenset({"DAE_VERSION", "DAED_VERSION"})
+_PIN_COMMIT_KEYS = frozenset(
+    {
+        "DAED_COMMIT",
+        "WING_COMMIT",
+        "CORE_COMMIT",
+        "CORE_UPSTREAM_COMMIT",
+        "OUTBOUND_COMMIT",
+        "QUICGO_BASE_COMMIT",
+        "QUICGO_PERF_TIP",
+    }
 )
+_PIN_KEYS = _PIN_VERSION_KEYS | _PIN_COMMIT_KEYS
 
 # Bootstrap-only values from successful GitHub Actions run 33479866793:
 # https://github.com/crafoot/CloudImageBuilder/actions/runs/33479866793
@@ -318,7 +327,7 @@ def _raw_file(transport: Transport, repository: str, commit: str, path: str) -> 
     return transport.get_bytes(url)
 
 
-def _parse_makefile(raw: bytes, label: str) -> dict:
+def _parse_makefile(raw: bytes, label: str, required_assignments=_PACKAGE_ASSIGNMENTS) -> dict:
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError as error:
@@ -334,11 +343,12 @@ def _parse_makefile(raw: bytes, label: str) -> dict:
             if key in assignments:
                 raise ValueError(f"duplicate Makefile assignment {key}")
             assignments[key] = value
-    if set(assignments) != set(_PACKAGE_ASSIGNMENTS):
+    if set(assignments) != set(required_assignments):
         raise ValueError(f"{label} Makefile must contain only required anchored package assignments")
-    if not re.fullmatch(r"[0-9a-fA-F]{64}", assignments["PKG_HASH"]):
+    if "PKG_HASH" in required_assignments and not re.fullmatch(r"[0-9a-fA-F]{64}", assignments["PKG_HASH"]):
         raise ValueError(f"{label} PKG_HASH must be SHA-256")
-    assignments["PKG_HASH"] = assignments["PKG_HASH"].lower()
+    if "PKG_HASH" in assignments:
+        assignments["PKG_HASH"] = assignments["PKG_HASH"].lower()
     return assignments
 
 
@@ -363,13 +373,17 @@ def _parse_pins(raw: bytes) -> dict:
         pins[key] = value
     if set(pins) != _PIN_KEYS:
         raise ValueError("ci/pins.env is missing required pins")
-    for name, repository in _PIN_REPOSITORIES.items():
-        if pins[f"{name}_REPOSITORY"] != repository:
-            raise ValueError(f"unexpected repository identity for {name}")
-        pins[f"{name}_COMMIT"] = validate_sha(pins[f"{name}_COMMIT"])
-    if not re.fullmatch(r"[0-9a-fA-F]{64}", pins["DAE_SOURCE_HASH"]):
-        raise ValueError("DAE_SOURCE_HASH must be SHA-256")
-    pins["DAE_SOURCE_HASH"] = pins["DAE_SOURCE_HASH"].lower()
+    for key in _PIN_COMMIT_KEYS:
+        pins[key] = validate_sha(pins[key])
+    for key in _PIN_VERSION_KEYS:
+        if not re.fullmatch(r"[0-9]{4}\.[0-9]{2}\.[0-9]{2}", pins[key]):
+            raise ValueError(f"{key} must use YYYY.MM.DD")
+        try:
+            parsed = datetime.date.fromisoformat(pins[key].replace(".", "-"))
+        except ValueError as error:
+            raise ValueError(f"{key} must be a valid date") from error
+        if parsed.strftime("%Y.%m.%d") != pins[key]:
+            raise ValueError(f"{key} must use YYYY.MM.DD")
     return pins
 
 
@@ -444,21 +458,31 @@ def _resolve_daede(transport: Transport, headers=None) -> dict:
     tree = _github_tree(transport, _DAEDE_REPOSITORY, commit, paths, headers, directories)
     packages = {}
     for path in paths[:3]:
-        package = _parse_makefile(_raw_file(transport, _DAEDE_REPOSITORY, commit, path), path)
+        required = ("PKG_VERSION", "PKG_RELEASE") if path == "luci-app-daede/Makefile" else _PACKAGE_ASSIGNMENTS
+        package = _parse_makefile(_raw_file(transport, _DAEDE_REPOSITORY, commit, path), path, required)
         package["tree_sha"] = tree[path.rsplit("/", 1)[0]]
         packages[path.rsplit("/", 1)[0]] = package
     pins = _parse_pins(_raw_file(transport, _DAEDE_REPOSITORY, commit, "ci/pins.env"))
     not_ready = []
-    for name, repository in _PIN_REPOSITORIES.items():
-        pinned = pins[f"{name}_COMMIT"]
+    for name, (repository, pin_key) in _PIN_UPSTREAMS.items():
+        pinned = pins[pin_key]
         head = _github_commit(transport, repository, "main", headers)
         if head != pinned:
-            comparison = _github_json(transport, f"repos/{repository}/compare/{pinned}...{head}", headers)
-            if comparison.get("status") == "ahead":
-                not_ready.append(name.lower().replace("_", "-"))
-    dae_pin = {key: pins[key] for key in ("DAE_REPOSITORY", "DAE_COMMIT", "DAE_SOURCE_HASH")}
+            not_ready.append(name)
+    common_pin_keys = (
+        "CORE_COMMIT",
+        "CORE_UPSTREAM_COMMIT",
+        "OUTBOUND_COMMIT",
+        "QUICGO_BASE_COMMIT",
+        "QUICGO_PERF_TIP",
+    )
+    dae_pin = {key: pins[key] for key in ("DAE_VERSION", *common_pin_keys)}
     dae_pin["tree_sha"] = tree["ci/pins.env"]
-    daed_pin = {key: pins[key] for key in ("DAED_REPOSITORY", "DAED_COMMIT", "DAE_WING_REPOSITORY", "DAE_WING_COMMIT")}
+    daed_pin = {
+        key: pins[key]
+        for key in ("DAED_VERSION", "DAED_COMMIT", "WING_COMMIT", *common_pin_keys)
+    }
+    daed_pin["tree_sha"] = tree["ci/pins.env"]
     return {
         "repository": _DAEDE_REPOSITORY,
         "commit": commit,
@@ -477,7 +501,7 @@ def resolve_candidate(transport: Transport, previous: dict | None) -> dict:
     del previous
     version, imagebuilder, sdk = _resolve_registry(transport)
     github_headers = getattr(transport, "github_headers", None)
-    immortal_commit = _github_commit(transport, "immortalwrt/immortalwrt", f"immortalwrt-{version}", github_headers)
+    immortal_commit = _github_commit(transport, "immortalwrt/immortalwrt", f"v{version}", github_headers)
     daede, not_ready = _resolve_daede(transport, github_headers)
     candidate = {
         "schema": 1,
@@ -635,7 +659,7 @@ def _validate_known_references(value, path="state"):
 
 
 def _is_git_reference_key(key: str) -> bool:
-    return key in {"commit", "sha", "sha1", "tree_sha"} or key.endswith("_COMMIT")
+    return key in {"commit", "sha", "sha1", "tree_sha"} or key in _PIN_COMMIT_KEYS or key.endswith("_COMMIT")
 
 
 def compare_states(previous: dict | None, candidate: dict) -> tuple[str, list[str]]:

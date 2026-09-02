@@ -88,7 +88,7 @@ class Mt3600beSourcesTests(unittest.TestCase):
             validate_sha("3799926")
 
     def test_rejects_abbreviated_tree_or_pin_commit_in_canonical_state(self):
-        for state in ({"tree_sha": "short"}, {"DAE_COMMIT": "short"}):
+        for state in ({"tree_sha": "short"}, {"DAE_COMMIT": "short"}, {"QUICGO_PERF_TIP": "short"}):
             with self.subTest(state=state), self.assertRaisesRegex(ValueError, "40-character"):
                 fingerprint(state)
 
@@ -626,10 +626,11 @@ class ParserAndFixtureTests(unittest.TestCase):
 
     def test_rejects_duplicate_pin_assignments(self):
         raw = (
-            "DAE_REPOSITORY=daeuniverse/dae\nDAE_COMMIT=" + "a" * 40 + "\n"
-            "DAED_REPOSITORY=daeuniverse/daed\nDAED_COMMIT=" + "b" * 40 + "\n"
-            "DAE_WING_REPOSITORY=daeuniverse/dae-wing\nDAE_WING_COMMIT=" + "c" * 40 + "\n"
-            "DAE_SOURCE_HASH=" + "d" * 64 + "\nDAE_SOURCE_HASH=" + "e" * 64 + "\n"
+            "DAE_VERSION=2026.08.28\nDAED_VERSION=2026.08.28\n"
+            "DAED_COMMIT=" + "b" * 40 + "\nWING_COMMIT=" + "c" * 40 + "\n"
+            "CORE_COMMIT=" + "d" * 40 + "\nCORE_UPSTREAM_COMMIT=" + "a" * 40 + "\n"
+            "OUTBOUND_COMMIT=" + "e" * 40 + "\nQUICGO_BASE_COMMIT=" + "f" * 40 + "\n"
+            "QUICGO_PERF_TIP=" + "1" * 40 + "\nQUICGO_PERF_TIP=" + "2" * 40 + "\n"
         ).encode()
         with self.assertRaisesRegex(ValueError, "duplicate"):
             sources._parse_pins(raw)
@@ -675,7 +676,7 @@ class GitHubResolverTests(unittest.TestCase):
                         if entry["path"] == path:
                             entry["sha"] = "a" * 40
                 if path == "ci/pins.env" and response["url"].endswith(path):
-                    response["bytes"] = response["bytes"].replace("DAE_SOURCE_HASH=" + "a" * 64, "DAE_SOURCE_HASH=" + "b" * 64)
+                    response["bytes"] = response["bytes"].replace("CORE_COMMIT=" + "7" * 40, "CORE_COMMIT=" + "b" * 40)
             candidate = resolve_candidate(FixtureTransport.merge(
                 FixtureTransport(load_fixture("registry-responses.json")), FixtureTransport(load_fixture("feed-indexes.json")),
                 FixtureTransport(load_fixture("github-responses.json")), FixtureTransport(fixture)), None)
@@ -683,6 +684,17 @@ class GitHubResolverTests(unittest.TestCase):
 
     def test_official_daede_heads_ahead_of_pins_are_not_ready(self):
         candidate = self._candidate("daede-not-ready.json")
+        self.assertEqual(candidate["resolution"], "not-ready")
+        self.assertEqual(candidate["not_ready_repositories"], ["dae", "daed", "dae-wing"])
+
+    def test_any_official_daede_head_mismatch_is_not_ready(self):
+        fixture = load_fixture("daede-not-ready.json")
+        for response in fixture["responses"]:
+            if "/compare/" in response["url"]:
+                response["json"]["status"] = "diverged"
+        candidate = resolve_candidate(FixtureTransport.merge(
+            FixtureTransport(load_fixture("registry-responses.json")), FixtureTransport(load_fixture("feed-indexes.json")),
+            FixtureTransport(load_fixture("github-responses.json")), FixtureTransport(fixture)), None)
         self.assertEqual(candidate["resolution"], "not-ready")
         self.assertEqual(candidate["not_ready_repositories"], ["dae", "daed", "dae-wing"])
 
