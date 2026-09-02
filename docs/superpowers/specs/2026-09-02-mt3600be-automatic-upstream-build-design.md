@@ -129,6 +129,17 @@ The file contains source identity only. It contains no credentials, generated
 firmware, transient run IDs, timestamps used solely for presentation, or
 mutable `latest` references without their resolved digest or SHA.
 
+### Initial bootstrap
+
+Before the first automatic promotion, `dev` has no complete successful lock
+because the historical Run #7 did not record every repository-index digest.
+During this short transition, an ordinary manual MT3600BE run continues to use
+the already verified Run #7 pins. The first daily/manual updater run treats the
+missing lock as `changed`, writes a complete candidate lock only on its staging
+branch, and performs the full build gate. The lock reaches `dev` only through
+that successful promotion. Once the complete lock exists, MT3600BE builds no
+longer use the compatibility fallback.
+
 ### Resolver
 
 A standalone script resolves upstream metadata, validates formats and source
@@ -307,14 +318,15 @@ Static verification includes shell syntax checks, workflow YAML validation,
 `git diff --check`, and an action linter when available. A live resolver dry
 run validates current external metadata without mutating the repository.
 
-After local tests pass, the changes are pushed to `dev` and their remote commit
-is confirmed. The repository default branch is then changed to `dev`, which is
-required before GitHub will accept a manual dispatch of a workflow that exists
-only there. The daily workflow is manually dispatched once immediately after
-the setting change. The GitHub-side validation must confirm either a clean
-`unchanged` result or a fully gated build and promotion. If GitHub rejects the
-workflow definition itself, the default branch is restored to `master` while
-the definition is corrected; `master` content remains untouched.
+The repository default branch was changed to `dev` by the repository owner
+before implementation. No scheduled workflow exists at that point, so the
+early setting change cannot start an incomplete run. After local tests pass,
+the changes are pushed to `dev` and their remote commit is confirmed. The daily
+workflow is then manually dispatched once. The GitHub-side validation must
+confirm a fully gated bootstrap build and promotion; subsequent validation may
+also produce a clean `unchanged` result. If GitHub rejects the workflow
+definition itself, the default branch can be restored to `master` while the
+definition is corrected; `master` content remains untouched.
 
 ## Security and operational constraints
 
