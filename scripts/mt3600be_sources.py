@@ -551,11 +551,14 @@ def _cli_build_env(args):
         if not isinstance(version, str) or not _VERSION.fullmatch(version):
             raise ValueError("invalid ImmortalWrt version")
         refs = {}
-        for name, key in (("IMAGEBUILDER_REFERENCE", "imagebuilder"), ("SDK_ARCH_REFERENCE", "sdk")):
+        for name, key, repository in (
+            ("IMAGEBUILDER_REFERENCE", "imagebuilder", "immortalwrt/imagebuilder"),
+            ("SDK_ARCH_REFERENCE", "sdk", "immortalwrt/sdk"),
+        ):
             image = immortalwrt.get(key)
-            if not isinstance(image, dict) or image.get("tag") != version or not isinstance(image.get("repository"), str):
+            if not isinstance(image, dict) or image.get("tag") != version or image.get("repository") != repository:
                 raise ValueError(f"invalid {key} reference")
-            refs[name] = f"{image['repository']}:{image['tag']}@{validate_digest(image.get('digest'))}"
+            refs[name] = f"{repository}:{version}@{validate_digest(image.get('digest'))}"
         nikki = lock.get("nikki")
         daede = lock.get("daede")
         if not isinstance(nikki, dict) or not isinstance(daede, dict):

@@ -122,6 +122,40 @@ class Mt3600beSourcesTests(unittest.TestCase):
         self.assertIn("changed_groups", output)
 
 
+class BuildEnvTests(unittest.TestCase):
+    def _lock(self):
+        return {
+            "schema": 1,
+            "immortalwrt": {
+                "version": "25.12.1",
+                "imagebuilder": {"repository": "immortalwrt/imagebuilder", "tag": "25.12.1", "digest": "sha256:" + "a" * 64},
+                "sdk": {"repository": "immortalwrt/sdk", "tag": "25.12.1", "digest": "sha256:" + "b" * 64},
+            },
+            "nikki": {"commit": "c" * 40},
+            "daede": {"commit": "d" * 40},
+        }
+
+    def _build_env(self, lock):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json") as output:
+            json.dump(lock, output)
+            output.flush()
+            return subprocess.run([sys.executable, "scripts/mt3600be_sources.py", "build-env", "--lock", output.name], cwd=ROOT, capture_output=True, text=True)
+
+    def _assert_rejected_without_environment_lines(self, result):
+        self.assertEqual(result.returncode, 3)
+        self.assertFalse(any("=" in line and line.split("=", 1)[0].isupper() for line in result.stdout.splitlines()))
+
+    def test_build_env_rejects_wrong_image_repository(self):
+        lock = self._lock()
+        lock["immortalwrt"]["imagebuilder"]["repository"] = "example.invalid/imagebuilder"
+        self._assert_rejected_without_environment_lines(self._build_env(lock))
+
+    def test_build_env_rejects_newline_repository_injection(self):
+        lock = self._lock()
+        lock["immortalwrt"]["sdk"]["repository"] = "immortalwrt/sdk\nINJECTED=1"
+        self._assert_rejected_without_environment_lines(self._build_env(lock))
+
+
 class ResolverTests(unittest.TestCase):
     def _transport(self, *names):
         return FixtureTransport.from_files(*(FIXTURES / name for name in names))
