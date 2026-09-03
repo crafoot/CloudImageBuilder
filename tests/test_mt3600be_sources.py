@@ -364,6 +364,14 @@ class OrchestratorWorkflowContractTests(unittest.TestCase):
         self.assertIn("gh run watch", locate)
         self.assertIn(".headSha == $sha", locate)
 
+    def test_automatic_dispatch_uses_mt3600be_management_address(self):
+        dispatch = self._step("Dispatch the exact staging build")
+        self.assertIn("custom_router_ip=192.168.8.1", dispatch)
+
+    def test_automatic_dispatch_enables_store(self):
+        dispatch = self._step("Dispatch the exact staging build")
+        self.assertIn("enable_store=true", dispatch)
+
     def test_artifact_and_release_gates_cover_every_required_asset(self):
         verify = self._step("Download and verify the firmware artifact")
         draft = self._step("Create or reconcile the complete draft release")

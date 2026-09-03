@@ -307,6 +307,8 @@ jobs:
           gh workflow run build-wireless-router25.12.yml \
             --ref "$STAGING_BRANCH" \
             -f profile=glinet_gl-mt3600be \
+            -f custom_router_ip=192.168.8.1 \
+            -f enable_store=true \
             -f automatic_update=true \
             -f source_fingerprint="$SOURCE_FINGERPRINT"
 
