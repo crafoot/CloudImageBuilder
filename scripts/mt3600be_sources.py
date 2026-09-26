@@ -467,6 +467,30 @@ def _resolve_nikki(transport: Transport, headers=None) -> dict:
     return {"repository": _NIKKI_REPOSITORY, "commit": commit, "packages": packages}
 
 
+def _matching_daede_release(transport: Transport, commit: str, packages: dict, headers=None) -> dict | None:
+    release = _github_json(transport, f"repos/{_DAEDE_REPOSITORY}/releases/latest", headers)
+    if release.get("draft") is not False or release.get("prerelease") is not False:
+        return None
+    if release.get("target_commitish") != commit:
+        return None
+    tag = release.get("tag_name")
+    assets = release.get("assets")
+    if not isinstance(tag, str) or not tag or not isinstance(assets, list):
+        return None
+    expected = {
+        name: f"{name}-{package['PKG_VERSION']}-r{package['PKG_RELEASE']}-aarch64_cortex-a53.apk"
+        for name, package in packages.items()
+        if name in ("dae", "daed")
+    }
+    matched = {}
+    for name, filename in expected.items():
+        candidates = [asset for asset in assets if isinstance(asset, dict) and asset.get("name") == filename]
+        if len(candidates) != 1 or candidates[0].get("state") != "uploaded":
+            return None
+        matched[name] = {"name": filename, "digest": validate_digest(candidates[0].get("digest"))}
+    return {"tag": tag, "target_commit": commit, "assets": matched}
+
+
 def _resolve_daede(transport: Transport, headers=None) -> dict:
     commit = _github_commit(transport, _DAEDE_REPOSITORY, "main", headers)
     paths = ("dae/Makefile", "daed/Makefile", "luci-app-daede/Makefile", "ci/pins.env")
@@ -485,6 +509,9 @@ def _resolve_daede(transport: Transport, headers=None) -> dict:
         head = _github_commit(transport, repository, "main", headers)
         if head != pinned:
             not_ready.append(name)
+    release = _matching_daede_release(transport, commit, packages, headers) if not_ready else None
+    if release is not None:
+        not_ready.clear()
     common_pin_keys = (
         "CORE_COMMIT",
         "CORE_UPSTREAM_COMMIT",
@@ -499,13 +526,16 @@ def _resolve_daede(transport: Transport, headers=None) -> dict:
         for key in ("DAED_VERSION", "DAED_COMMIT", "WING_COMMIT", *common_pin_keys)
     }
     daed_pin["tree_sha"] = tree["ci/pins.env"]
-    return {
+    resolved = {
         "repository": _DAEDE_REPOSITORY,
         "commit": commit,
         "dae": {"package": packages["dae"], "pins": dae_pin},
         "daed": {"package": packages["daed"], "pins": daed_pin},
         "luci": packages["luci-app-daede"],
-    }, not_ready
+    }
+    if release is not None:
+        resolved["release"] = release
+    return resolved, not_ready
 
 
 def resolve_candidate(transport: Transport, previous: dict | None) -> dict:

@@ -699,6 +699,20 @@ class GitHubResolverTests(unittest.TestCase):
         self.assertEqual(candidate["resolution"], "not-ready")
         self.assertEqual(candidate["not_ready_repositories"], ["dae", "daed", "dae-wing"])
 
+    def test_published_matching_daede_apks_make_head_mismatch_ready(self):
+        fixture = load_fixture("daede-not-ready.json")
+        release = next(response for response in fixture["responses"] if response["url"].endswith("/releases/latest"))
+        release["json"]["assets"] = [
+            {"name": "dae-1.0.0-r1-aarch64_cortex-a53.apk", "state": "uploaded", "digest": "sha256:" + "a" * 64},
+            {"name": "daed-1.0.0-r1-aarch64_cortex-a53.apk", "state": "uploaded", "digest": "sha256:" + "b" * 64},
+        ]
+        candidate = resolve_candidate(FixtureTransport.merge(
+            FixtureTransport(load_fixture("registry-responses.json")), FixtureTransport(load_fixture("feed-indexes.json")),
+            FixtureTransport(load_fixture("github-responses.json")), FixtureTransport(fixture)), None)
+        self.assertEqual(candidate["resolution"], "ready")
+        self.assertEqual(candidate["daede"]["release"]["tag"], "v2026.08.28")
+        self.assertEqual(candidate["daede"]["release"]["assets"]["dae"]["digest"], "sha256:" + "a" * 64)
+
     def test_any_official_daede_head_mismatch_is_not_ready(self):
         fixture = load_fixture("daede-not-ready.json")
         for response in fixture["responses"]:

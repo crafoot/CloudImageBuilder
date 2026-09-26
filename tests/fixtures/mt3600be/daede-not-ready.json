@@ -11,6 +11,7 @@
     {"url": "https://api.github.com/repos/daeuniverse/daed/commits/main", "json": {"sha": "8888888888888888888888888888888888888888"}, "headers": {}},
     {"url": "https://api.github.com/repos/daeuniverse/daed/compare/5555555555555555555555555555555555555555...8888888888888888888888888888888888888888", "json": {"status": "ahead"}, "headers": {}},
     {"url": "https://api.github.com/repos/daeuniverse/dae-wing/commits/main", "json": {"sha": "9999999999999999999999999999999999999999"}, "headers": {}},
-    {"url": "https://api.github.com/repos/daeuniverse/dae-wing/compare/6666666666666666666666666666666666666666...9999999999999999999999999999999999999999", "json": {"status": "ahead"}, "headers": {}}
+    {"url": "https://api.github.com/repos/daeuniverse/dae-wing/compare/6666666666666666666666666666666666666666...9999999999999999999999999999999999999999", "json": {"status": "ahead"}, "headers": {}},
+    {"url": "https://api.github.com/repos/kenzok8/openwrt-daede/releases/latest", "json": {"tag_name": "v2026.08.28", "target_commitish": "3333333333333333333333333333333333333333", "draft": false, "prerelease": false, "assets": []}, "headers": {}}
   ]
 }
