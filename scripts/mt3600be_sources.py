@@ -467,11 +467,9 @@ def _resolve_nikki(transport: Transport, headers=None) -> dict:
     return {"repository": _NIKKI_REPOSITORY, "commit": commit, "packages": packages}
 
 
-def _matching_daede_release(transport: Transport, commit: str, packages: dict, headers=None) -> dict | None:
+def _matching_daede_release(transport: Transport, commit: str, packages: dict, tree: dict, headers=None) -> dict | None:
     release = _github_json(transport, f"repos/{_DAEDE_REPOSITORY}/releases/latest", headers)
     if release.get("draft") is not False or release.get("prerelease") is not False:
-        return None
-    if release.get("target_commitish") != commit:
         return None
     tag = release.get("tag_name")
     assets = release.get("assets")
@@ -488,7 +486,18 @@ def _matching_daede_release(transport: Transport, commit: str, packages: dict, h
         if len(candidates) != 1 or candidates[0].get("state") != "uploaded":
             return None
         matched[name] = {"name": filename, "digest": validate_digest(candidates[0].get("digest"))}
-    return {"tag": tag, "target_commit": commit, "assets": matched}
+    # target_commitish may be a branch name; resolve the immutable release tag.
+    release_commit = _github_commit(transport, _DAEDE_REPOSITORY, tag, headers)
+    if release_commit != commit:
+        # SDK builds use the current packaging source. An older release proves
+        # readiness only if both complete core package trees and pins match.
+        # LuCI and unrelated repository changes do not invalidate that proof.
+        paths = ("dae/Makefile", "daed/Makefile", "ci/pins.env")
+        directories = ("dae", "daed")
+        release_tree = _github_tree(transport, _DAEDE_REPOSITORY, release_commit, paths, headers, directories)
+        if any(release_tree[path] != tree[path] for path in (*paths, *directories)):
+            return None
+    return {"tag": tag, "target_commit": release_commit, "assets": matched}
 
 
 def _resolve_daede(transport: Transport, headers=None) -> dict:
@@ -509,7 +518,7 @@ def _resolve_daede(transport: Transport, headers=None) -> dict:
         head = _github_commit(transport, repository, "main", headers)
         if head != pinned:
             not_ready.append(name)
-    release = _matching_daede_release(transport, commit, packages, headers) if not_ready else None
+    release = _matching_daede_release(transport, commit, packages, tree, headers) if not_ready else None
     if release is not None:
         not_ready.clear()
     common_pin_keys = (

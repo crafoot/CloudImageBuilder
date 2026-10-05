@@ -13,10 +13,17 @@ digests and records a canonical source lock. Its fingerprint covers the
 selected ImmortalWrt release and commit, the ImageBuilder and SDK
 tag-plus-digest references, the three ImageBuilder feed indexes and their
 hashes, and the package-relevant Nikki and daede source trees. For daede, it
-also records the dae, daed, and dae-wing heads and the packaging repository's
-corresponding pins.
+checks the dae, daed, and dae-wing heads against the packaging repository's
+corresponding pins. A published stable release can also prove that the pinned
+core inputs are buildable: both uploaded A53 APK names and digests must be
+valid, and the release tag's dae/daed package trees and pins must match the
+candidate. The release tag is resolved to its actual commit; a moving
+`target_commitish` branch name is not used as proof. LuCI-only or unrelated
+commits after that release are allowed, while changed core trees or pins
+still require a matching release. The SDK continues building from the
+candidate packaging commit, including its latest LuCI source.
 
-The daily workflow runs at `20:19 UTC` (`03:20` Asia/Singapore on the next
+The daily workflow runs at `19:20 UTC` (`03:20` Asia/Singapore on the next
 calendar day). It runs only from the current `dev` head, never targets
 `master`, and permits only one update promotion at a time.
 
@@ -26,9 +33,11 @@ The resolver prints one JSON outcome:
   lock. No staging branch or child build is created.
 - `changed`: a valid candidate differs from the successful lock. Only this
   outcome may enter the build gate.
-- `not-ready`: an official dae-family head is newer than the pin promoted by
-  `kenzok8/openwrt-daede`. Wait for that packaging upstream to complete its
-  build gate; do not label the previous package as the newer source.
+- `not-ready`: an official dae-family head differs from its packaging pin,
+  and no published release proves the candidate core inputs are buildable.
+  The scheduled workflow exits successfully and skips staging/building,
+  retaining the successful lock until the next check. Resolver CLI status 2
+  remains distinct from invalid metadata (status 3).
 - `invalid`: metadata, a digest/SHA, a required feed, or another consistency
   check could not be verified. The workflow fails closed and keeps the prior
   lock and release.
@@ -151,9 +160,9 @@ commit, dispatch, publish, or flash anything.
 
 ## Recovery and safety boundaries
 
-- For `not-ready`, wait for `kenzok8/openwrt-daede` to catch up with the
-  official dae-family heads, then rerun the resolver. Do not downgrade an
-  upstream head or modify a pin to bypass the gate.
+- For `not-ready`, wait for `kenzok8/openwrt-daede` to catch up or publish a
+  release matching the candidate core inputs. The scheduled check waits
+  successfully; no staging branch, build, or lock promotion occurs.
 - For `invalid`, retain the existing lock and release. Read the workflow
   summary/error, correct the upstream availability or verified configuration
   problem, then retry. Do not substitute an unverified digest, abbreviated

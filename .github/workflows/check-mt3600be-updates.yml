@@ -207,7 +207,14 @@ jobs:
                 exit 1
               fi
               ;;
-            not-ready|invalid)
+            not-ready)
+              if [[ "$resolver_status" -ne 2 ]]; then
+                echo 'Not-ready candidate did not satisfy its status contract' | tee -a "$GITHUB_STEP_SUMMARY"
+                exit 1
+              fi
+              echo "Waiting for upstream package readiness: $changed_groups" | tee -a "$GITHUB_STEP_SUMMARY"
+              ;;
+            invalid)
               echo "Resolver failed closed with $decision: ${resolver_error:-$changed_groups}" | tee -a "$GITHUB_STEP_SUMMARY"
               exit 1
               ;;

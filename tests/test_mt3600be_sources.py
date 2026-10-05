@@ -123,6 +123,21 @@ class Mt3600beSourcesTests(unittest.TestCase):
         self.assertEqual(decision, "changed")
         self.assertIn("immortalwrt.commit", groups)
 
+    def test_each_immortalwrt_build_input_triggers_changed(self):
+        previous = load_fixture("previous-lock.json")
+        mutations = (
+            ("version", "25.12.2", "immortalwrt.version"),
+            ("commit", "b" * 40, "immortalwrt.commit"),
+            ("imagebuilder", {"digest": "sha256:" + "b" * 64}, "immortalwrt.imagebuilder"),
+            ("sdk", {"digest": "sha256:" + "f" * 64}, "immortalwrt.sdk"),
+            ("feeds", {"combined_digest": "b" * 64}, "immortalwrt.feeds"),
+        )
+        for key, value, expected in mutations:
+            with self.subTest(key=key):
+                candidate = json.loads(json.dumps(previous))
+                candidate["immortalwrt"][key] = value
+                self.assertEqual(compare_states(previous, candidate), ("changed", [expected]))
+
     def test_uppercase_references_compare_as_equal(self):
         previous = {"schema": 1, "immortalwrt": {"version": "25.12.1", "commit": "a" * 40, "imagebuilder": {"digest": "sha256:" + "b" * 64}}}
         candidate = {"schema": 1, "immortalwrt": {"version": "25.12.1", "commit": "A" * 40, "imagebuilder": {"digest": "SHA256:" + "B" * 64}}}
@@ -338,6 +353,20 @@ class OrchestratorWorkflowContractTests(unittest.TestCase):
         self.assertIn("invalid", resolve)
         self.assertIn("exit 1", resolve)
         self.assertIn("steps.resolve.outputs.decision == 'changed'", stage)
+
+    def test_not_ready_waits_successfully_but_invalid_still_fails(self):
+        step = self._step("Resolve and summarize the candidate")
+        script = step.split("        run: |\n", 1)[1]
+        script = "\n".join(line[10:] for line in script.splitlines())
+        case = script[script.index('case "$decision" in'):script.index('esac') + 4]
+        for decision, status, expected in (("not-ready", 2, 0), ("not-ready", 3, 1), ("invalid", 3, 1)):
+            with self.subTest(decision=decision, status=status), tempfile.TemporaryDirectory() as directory:
+                result = subprocess.run(["bash", "-c", case], env={
+                    "decision": decision, "resolver_status": str(status),
+                    "resolver_error": "", "changed_groups": '["dae"]',
+                    "GITHUB_STEP_SUMMARY": str(pathlib.Path(directory) / "summary"),
+                }, capture_output=True, text=True)
+                self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
 
     def test_bootstrap_creates_config_directory_before_lock_install(self):
         stage = self._step("Create and push the candidate staging branch")
@@ -706,12 +735,48 @@ class GitHubResolverTests(unittest.TestCase):
             {"name": "dae-1.0.0-r1-aarch64_cortex-a53.apk", "state": "uploaded", "digest": "sha256:" + "a" * 64},
             {"name": "daed-1.0.0-r1-aarch64_cortex-a53.apk", "state": "uploaded", "digest": "sha256:" + "b" * 64},
         ]
+        fixture["responses"].append({"url": "https://api.github.com/repos/kenzok8/openwrt-daede/commits/v2026.08.28", "json": {"sha": "3" * 40}})
         candidate = resolve_candidate(FixtureTransport.merge(
             FixtureTransport(load_fixture("registry-responses.json")), FixtureTransport(load_fixture("feed-indexes.json")),
             FixtureTransport(load_fixture("github-responses.json")), FixtureTransport(fixture)), None)
         self.assertEqual(candidate["resolution"], "ready")
         self.assertEqual(candidate["daede"]["release"]["tag"], "v2026.08.28")
         self.assertEqual(candidate["daede"]["release"]["assets"]["dae"]["digest"], "sha256:" + "a" * 64)
+
+    def _release_fixture(self):
+        fixture = load_fixture("daede-not-ready.json")
+        release = next(r["json"] for r in fixture["responses"] if r["url"].endswith("/releases/latest"))
+        release["target_commitish"] = "main"  # GitHub metadata can name a moving branch.
+        release["assets"] = [
+            {"name": f"{name}-1.0.0-r1-aarch64_cortex-a53.apk", "state": "uploaded", "digest": "sha256:" + digest * 64}
+            for name, digest in (("dae", "a"), ("daed", "b"))
+        ]
+        fixture["responses"].append({"url": "https://api.github.com/repos/kenzok8/openwrt-daede/commits/v2026.08.28", "json": {"sha": "1" * 40}})
+        tree = next(r["json"] for r in fixture["responses"] if "/git/trees/" in r["url"])
+        fixture["responses"].append({"url": "https://api.github.com/repos/kenzok8/openwrt-daede/git/trees/" + "1" * 40 + "?recursive=1", "json": json.loads(json.dumps(tree))})
+        return fixture
+
+    def _resolve_release_fixture(self, fixture):
+        return resolve_candidate(FixtureTransport.merge(
+            FixtureTransport(load_fixture("registry-responses.json")), FixtureTransport(load_fixture("feed-indexes.json")),
+            FixtureTransport(load_fixture("github-responses.json")), FixtureTransport(fixture)), None)
+
+    def test_older_release_with_same_core_inputs_allows_luci_update(self):
+        fixture = self._release_fixture()
+        old_tree = fixture["responses"][-1]["json"]["tree"]
+        next(e for e in old_tree if e["path"] == "luci-app-daede")["sha"] = "f" * 40
+        candidate = self._resolve_release_fixture(fixture)
+        self.assertEqual(candidate["resolution"], "ready")
+        self.assertEqual(candidate["daede"]["commit"], "3" * 40)
+        self.assertEqual(candidate["daede"]["release"]["target_commit"], "1" * 40)
+
+    def test_same_apk_names_cannot_hide_changed_core_or_pins(self):
+        for path in ("dae", "daed", "ci/pins.env"):
+            with self.subTest(path=path):
+                fixture = self._release_fixture()
+                old_tree = fixture["responses"][-1]["json"]["tree"]
+                next(e for e in old_tree if e["path"] == path)["sha"] = "f" * 40
+                self.assertEqual(self._resolve_release_fixture(fixture)["resolution"], "not-ready")
 
     def test_any_official_daede_head_mismatch_is_not_ready(self):
         fixture = load_fixture("daede-not-ready.json")
